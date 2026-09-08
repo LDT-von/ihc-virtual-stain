@@ -2,6 +2,7 @@
 
 用法：
     python -m src.train --config configs/default.yaml --marker HLA-DR
+    python -m src.train --data_root "E:/aic/初赛数据集（包含训练集和测试集输入）/初赛数据集（包含训练集和测试集输入）"
 """
 import argparse
 import os
@@ -22,6 +23,7 @@ def parse_args():
     p.add_argument("--marker", type=str, default=None, help="覆盖配置中的 marker")
     p.add_argument("--epochs", type=int, default=None)
     p.add_argument("--batch_size", type=int, default=None)
+    p.add_argument("--data_root", type=str, default=None, help="覆盖 data.root")
     p.add_argument("--resume", type=str, default=None)
     return p.parse_args()
 
@@ -33,6 +35,8 @@ def merge_config(args, cfg):
         cfg["train"]["epochs"] = args.epochs
     if args.batch_size:
         cfg["data"]["batch_size"] = args.batch_size
+    if args.data_root:
+        cfg["data"]["root"] = args.data_root
     return cfg
 
 

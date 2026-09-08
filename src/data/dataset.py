@@ -83,7 +83,16 @@ class DAPItoIHCDataset(Dataset):
 
         split_dir = self.root / split
         dapi_dir = split_dir / "DAPI"
-        ihc_dir = split_dir / f"IHC_{marker}" if split != "test" else None
+        # 兼容两种 IHC 目录命名：
+        #   1) train/IHC_<marker>/    (我们推荐的结构)
+        #   2) train/<marker>/        (官方下载的原始结构，如 HLA-DR/)
+        if split != "test":
+            ihc_dir = split_dir / f"IHC_{marker}"
+            if not ihc_dir.exists():
+                alt = split_dir / marker
+                ihc_dir = alt if alt.exists() else ihc_dir
+        else:
+            ihc_dir = None
 
         self.dapi_files = list_image_files(dapi_dir)
         if self.dapi_files:
