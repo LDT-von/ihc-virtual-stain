@@ -1,0 +1,49 @@
+# 全局默认配置
+defaults:
+  marker: HLA-DR            # 目标 IHC 标记
+  seed: 42
+  device: cuda              # cpu / cuda
+  amp: true                 # 混合精度训练
+
+data:
+  root: ./data
+  train_dir: train
+  test_dir: test
+  patch_size: 256
+  batch_size: 16
+  num_workers: 4
+  augment: true
+
+train:
+  epochs: 200
+  lr: 2.0e-4
+  weight_decay: 1.0e-5
+  scheduler: cosine
+  warmup_steps: 1000
+  log_every: 50
+  val_every: 1000
+  save_every: 5
+
+model:
+  name: conditional_unet
+  in_channels: 3            # RGB 输入
+  cond_channels: 3          # DAPI 条件
+  out_channels: 3
+  base_channels: 64
+  channel_mults: [1, 2, 4, 8]
+  num_res_blocks: 2
+  attention_resolutions: [16, 8]
+  dropout: 0.1
+
+flow_matching:
+  sigma_min: 1.0e-5
+  method: optimal_transport  # optimal_transport / independent
+  num_sampling_steps: 50
+  solver: euler             # euler / heun
+
+eval:
+  metrics: [ssim, psnr]
+
+infer:
+  ckpt: ./checkpoints/best.pt
+  output_dir: ./submissions
