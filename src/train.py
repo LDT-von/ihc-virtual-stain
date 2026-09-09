@@ -111,8 +111,12 @@ def main():
         ckpt = torch.load(args.resume, map_location=device)
         model.load_state_dict(ckpt["model"])
         optimizer.load_state_dict(ckpt["optimizer"])
+        # 强制使用配置文件里的新学习率（避免加载过大的 lr 再次发散）
+        for pg in optimizer.param_groups:
+            pg["lr"] = cfg["train"]["lr"]
+            pg["weight_decay"] = cfg["train"]["weight_decay"]
         start_epoch = ckpt["epoch"] + 1
-        print(f"[Train] 恢复自 {args.resume}, epoch={start_epoch}")
+        print(f"[Train] 恢复自 {args.resume}, epoch={start_epoch}, reset lr={cfg['train']['lr']}")
 
     # 输出目录
     out_dir = Path(f"./checkpoints/{marker}_{int(time.time())}")
@@ -136,9 +140,21 @@ def main():
             with torch.amp.autocast("cuda", enabled=scaler.is_enabled()):
                 loss, _, _ = fm.forward_train(ihc, dapi)
 
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
+            # NaN/Inf 保护：丢弃坏 batch
+            if not torch.isfinite(loss):
+                print(f"[Warn] skip non-finite loss at step {global_step}")
+                continue
+
+            if scaler.is_enabled():
+                scaler.scale(loss).backward()
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
 
             epoch_loss += loss.item()
             n_batches += 1
@@ -150,13 +166,15 @@ def main():
                     f"loss={loss.item():.4f} lr={optimizer.param_groups[0]['lr']:.2e}"
                 )
                 print(msg)
-                log_path.write_text(msg + "\n", encoding="utf-8", append=True)
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(msg + "\n")
 
         avg_loss = epoch_loss / max(n_batches, 1)
         elapsed = time.time() - t0
         msg = f"[epoch {epoch}] avg_loss={avg_loss:.4f} time={elapsed:.1f}s"
         print(msg)
-        log_path.write_text(msg + "\n", encoding="utf-8", append=True)
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(msg + "\n")
 
         if (epoch + 1) % cfg["train"]["save_every"] == 0:
             ckpt_path = out_dir / f"epoch{epoch}.pt"

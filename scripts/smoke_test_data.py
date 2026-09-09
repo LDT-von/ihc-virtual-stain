@@ -4,7 +4,7 @@ sys.path.insert(0, ".")
 
 from src.data.dataset import DAPItoIHCDataset
 
-DATA_ROOT = r"E:\aic\初赛数据集（包含训练集和测试集输入）\初赛数据集（包含训练集和测试集输入）"
+DATA_ROOT = r"E:\aic\初赛数据集（包含训练集和测试集输入）"
 
 print("=" * 60)
 print("数据加载 smoke test")

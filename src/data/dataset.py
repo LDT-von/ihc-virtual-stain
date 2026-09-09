@@ -37,7 +37,6 @@ def build_transforms(patch_size: int, augment: bool) -> A.Compose:
     if augment:
         return A.Compose(
             [
-                A.RandomCrop(patch_size, patch_size) if False else A.NoOp(),
                 A.HorizontalFlip(p=0.5),
                 A.VerticalFlip(p=0.5),
                 A.RandomRotate90(p=0.5),
@@ -83,9 +82,6 @@ class DAPItoIHCDataset(Dataset):
 
         split_dir = self.root / split
         dapi_dir = split_dir / "DAPI"
-        # 兼容两种 IHC 目录命名：
-        #   1) train/IHC_<marker>/    (我们推荐的结构)
-        #   2) train/<marker>/        (官方下载的原始结构，如 HLA-DR/)
         if split != "test":
             ihc_dir = split_dir / f"IHC_{marker}"
             if not ihc_dir.exists():
@@ -107,7 +103,6 @@ class DAPItoIHCDataset(Dataset):
                 if ihc_path.exists():
                     self.pairs.append((dapi_path, ihc_path))
                 else:
-                    # 容错：如果 IHC 缺失，跳过
                     print(f"[Dataset] 警告：缺失配对 {ihc_path}，跳过")
         if ihc_dir is not None and self.pairs:
             print(f"[Dataset] {split}/{marker}: 有效配对 {len(self.pairs)}")
@@ -132,10 +127,9 @@ class DAPItoIHCDataset(Dataset):
                 "name": dapi_path.stem,
             }
 
-        # 测试模式：仅 DAPI
         transformed = self.transform(image=dapi_img)
         return {
             "dapi": transformed["image"],
-            "ihc": torch.zeros(3, *dapi_img.shape[:2]),  # 占位
+            "ihc": torch.zeros(3, *dapi_img.shape[:2]),
             "name": dapi_path.stem,
         }

@@ -1,111 +1,94 @@
-# 📦 提交指南
+# AIC 虚拟染色赛题提交指南
 
-> ⚠️ **重要**：最终提交格式请以官方最新通知为准（QQ 群 `1084060012`）
+本指南依据项目中的《基于虚拟染色的免疫组化图像生成》赛题 PDF（第 7–8 页）整理。赛事方后续发布的新通知优先。
 
-## 一、数据准备
+## 已确认的提交规则
 
-按以下结构放置数据到 `data/` 目录：
+- 输入为测试集 `DAPI` 图像；输出为官方要求的一个目标标记图像，例如 `HLA-DR`。
+- 输入与输出必须空间尺寸一致。官方 patch 为 `256×256`，图像格式为 JPG。
+- 输出文件名必须与输入图像一一对应，并使用 `_fake.jpg` 后缀。例如 `ROI025_00_00.jpg` 对应 `ROI025_00_00_fake.jpg`。
+- 初赛结果目录为：`results/test/<marker>/`。PDF 示例为 `results/test/CD68/ROI025_00_00_fake.jpg`。
+- 测试集只能自动推理；不得人工逐张修改或使用测试集标签、衍生信息进行训练或后处理。
 
-```
-data/
+PDF 没有规定压缩包文件名或要求初赛必须包含代码、模型。若提交平台要求上传 ZIP，可将上述 `results/` 目录原样压缩；本项目的 `src.submit` 会创建该结构。
+
+## 当前官方数据位置
+
+本地数据根目录应直接包含 `train/` 与 `test/`：
+
+```text
+E:\aic\ihc-virtual-stain\初赛数据集（包含训练集和测试集输入）\初赛数据集（包含训练集和测试集输入）
 ├── train/
-│   ├── DAPI/                 # 输入：所有 DAPI patch
-│   │   ├── patch_001.png
-│   │   ├── patch_002.png
-│   │   └── ...
-│   ├── IHC_HLA-DR/           # 真实标签：HLA-DR 染色
-│   │   ├── patch_001.png     # 同名配对
-│   │   └── ...
-│   ├── IHC_CD45RO/           # 可选：训练多标记时
-│   ├── IHC_Vimentin/
-│   └── IHC_CD68/
-├── val/                      # 可选：本地验证（与 train 同结构）
-└── test/                     # 测试集（仅 DAPI/，用于推理提交）
+│   ├── DAPI/
+│   ├── HLA-DR/
+│   ├── CD45RO/
+│   ├── Vimentin/
+│   └── CD68/
+└── test/
     └── DAPI/
+```
+
+当前初赛测试集共有 1,346 张 DAPI JPG 图像。
+
+## 生成初赛结果
+
+以当前最新的 HLA-DR checkpoint 为例，在项目根目录执行：
+
+```powershell
+D:\Anaconda3\python.exe -m src.inference `
+  --ckpt "checkpoints\HLA-DR_1788855131\epoch109.pt" `
+  --marker HLA-DR `
+  --data-root "E:\aic\ihc-virtual-stain\初赛数据集（包含训练集和测试集输入）\初赛数据集（包含训练集和测试集输入）" `
+  --split test `
+  --output-dir results
+```
+
+输出会写入：
+
+```text
+results/
+└── test/
+    └── HLA-DR/
+        ├── ROI025_00_00_fake.jpg
         └── ...
 ```
 
-> 💡 官方数据下载方式详见 [aicomp.cn 赛题页](https://www.aicomp.cn/tracks/tracks-1/3759.html)
+命令默认使用 checkpoint 中保存的 50 个采样步数。只用于检查流程时，可额外传入 `--max-samples 2 --num-steps 2`；该低步数输出不能作为正式成绩提交。
 
-## 二、训练
+## 打包初赛结果（如平台要求 ZIP）
 
-```bash
-# 单标记训练（HLA-DR）
-python -m src.train --config configs/default.yaml --marker HLA-DR
-
-# 多标记训练（CD45RO）
-python -m src.train --marker CD45RO --epochs 200
-
-# 从断点恢复
-python -m src.train --resume checkpoints/HLA-DR_xxx/epoch50.pt
+```powershell
+D:\Anaconda3\python.exe -m src.submit `
+  --results-dir results `
+  --marker HLA-DR `
+  --stage preliminary `
+  --out-zip submission_hla_dr.zip
 ```
 
-训练输出：
+压缩包内仅包含：
 
-- `checkpoints/<marker>_<timestamp>/epochN.pt`：每 5 个 epoch 保存
-- `checkpoints/<marker>_<timestamp>/final.pt`：最终模型
-- `logs/train_<marker>.log`：训练日志
-
-## 三、推理与本地评测
-
-```bash
-# 在验证集上评测（计算 SSIM/PSNR）
-python -m src.inference \
-  --ckpt checkpoints/HLA-DR_xxx/final.pt \
-  --marker HLA-DR \
-  --split val \
-  --save_images
-
-# 在测试集上生成（生成结果用于提交）
-python -m src.inference \
-  --ckpt checkpoints/HLA-DR_xxx/final.pt \
-  --marker HLA-DR \
-  --split test \
-  --output_dir submissions/run_test/ \
-  --save_images
+```text
+results/test/HLA-DR/ROI025_00_00_fake.jpg
 ```
 
-推理输出：
+## 复赛与半决赛的额外材料
 
-- `submissions/<run>_<timestamp>/images/<name>.png`：生成的 IHC 图
-- `submissions/<run>_<timestamp>/metrics.txt`：SSIM / PSNR
+除同样格式的结果图像外，赛题 PDF 要求提交：
 
-## 四、打包提交
+1. 完整 Python 代码：数据预处理、训练和预测推理；
+2. 训练好的模型文件，以及模型加载与运行说明、所需环境和依赖；
+3. PDF 技术报告，不少于 2,000 字，涵盖算法设计、模型架构、训练设置、数据增强、指标分析、创新点和不足。
 
-```bash
-python -m src.submit \
-  --marker HLA-DR \
-  --ckpt checkpoints/HLA-DR_xxx/final.pt \
-  --output_dir submissions/run_test/ \
-  --out_zip submission.zip
+对应打包命令：
+
+```powershell
+D:\Anaconda3\python.exe -m src.submit `
+  --results-dir results `
+  --marker HLA-DR `
+  --stage rematch `
+  --ckpt "checkpoints\HLA-DR_1788855131\epoch109.pt" `
+  --report "技术报告.pdf" `
+  --out-zip rematch_hla_dr.zip
 ```
 
-`submission.zip` 会包含：
-
-- `submissions/run_test/images/` — 生成的 IHC 结果
-- `src/` — 源代码（用于官方复现）
-- `configs/` — 配置
-- `checkpoints/.../final.pt` — 模型权重
-
-## 五、关键时间节点
-
-| 日期 | 事项 |
-|------|------|
-| 2026-04-28 起 | 官方开放报名 |
-| 2026-10-15 20:00 | 报名截止 |
-| 赛前/赛中 | 提交作品进入官方评测 |
-
-## 六、注意事项
-
-1. **GPU 资源**：Flow Matching 在 256×256 上训练大约需要 8GB+ 显存；本地若无 GPU，推荐 **AutoDL / 恒源云**（按小时计费，4090/3090 性价比高）。
-2. **数据隐私**：训练好的模型权重仅限本人/团队使用，遵守官方数据使用协议。
-3. **可复现**：提交时务必保留 `configs/` 与 `src/`，方便官方核对。
-4. **多标记输出**：若做"一对多"挑战，需要为每个标记训练或共享一个多任务模型。
-
-## 七、改进方向（可选）
-
-- 用 **DDPM scheduler** 做对比基线
-- 引入 **histogram matching** / **stain normalization** 后处理
-- 用 **GAN discriminator** 做对抗损失（提高锐度）
-- 集成 **patch-level diffusion**（大尺寸 WSI 分块）
-- 试试 [UniPath](https://github.com/Hanminghao/UniPath)、[CytoSyn](https://arxiv.org/pdf/2603.18089) 等前沿方案
+半决赛使用 `--stage semifinal`。多个目标标记同时输出时，赛题说明会对多个输出成绩取平均；最终采用最后一次有效提交的成绩。

@@ -1,83 +1,95 @@
-# AIC 比赛项目 — 基于虚拟染色的免疫组化图像生成
+# IHC Virtual Stain (DAPI → IHC)
 
-> 第八届全球校园人工智能算法精英大赛（AIC）· 算法挑战赛道
-> 官方链接：https://www.aicomp.cn/tracks/tracks-1/3759.html
+AIC 2026 初赛 — DAPI 荧光图到 IHC 染色图的虚拟染色任务。
 
-## 赛题概览
+## 任务
 
-- **任务**：给定 **DAPI 染色图像 patches**，生成对应的 **IHC 标记图像**
-- **目标标记（4 选 1 / 可选多输出）**：
-  - `HLA-DR` （MHC II 类，抗原递呈）
-  - `CD45RO` （记忆 T 细胞）
-  - `Vimentin` （间质细胞/上皮-间质转化标志）
-  - `CD68` （巨噬细胞）
-- **评测指标**：SSIM（结构相似度）+ PSNR（峰值信噪比）
-- **报名截止**：2026-10-15 20:00
-- **官方交流**：QQ 群 `1084060012`（验证：学校名+姓名）
+- 输入：测试集 DAPI patch
+- 输出：对应 marker 的 IHC 染色预测图（`*_fake.jpg`）
+- 四个 marker：`HLA-DR`、`CD68`、`CD45RO`、`Vimentin`
 
-## 方法：Flow Matching（条件生成）
+## 方案
 
-选用 **Flow Matching** 作为基础生成模型，相比传统 DDPM：
+Pix2Pix GAN (U-Net 生成器 + PatchGAN 判别器)，DAPI 同时作为输入与条件。
 
-| 维度 | DDPM | Flow Matching |
-|------|------|--------------|
-| 采样步数 | 50-1000 | 20-50 |
-| 训练稳定性 | 一般 | 高 |
-| 病理图像保真 | 良好 | 更优 |
-| 推理速度 | 慢 | 快 ~10x |
-
-**核心思路**：学习一个从噪声到真实 IHC 图像的连续流场 `v_θ(x_t, t, x_dapi)`，通过 ODE 求解器（Euler / Heun）逐步去噪生成。
+- **生成器**：6 层 U-Net，`base_filters=64`，含残差块，skip connections
+- **判别器**：PatchGAN（70×70 receptive field）
+- **损失**：`L_gan (LSGAN) + 100 * L1 + 50 * L_SSIM`
+- **增强**：随机水平/垂直翻转、90° 旋转、ColorJitter、GaussianBlur
+- **优化器**：Adam (lr=2e-4, betas=(0.5, 0.999))，梯度裁剪 max_norm=1.0
+- **patch size**：256×256
 
 ## 目录结构
 
 ```
-aic/
-├── data/                   # 训练/测试数据（已 gitignore）
-│   ├── train/
-│   │   ├── DAPI/           # 输入 DAPI patches
-│   │   └── IHC_<marker>/   # 对应标记 IHC patches
-│   └── test/
-├── notebooks/              # EDA / 试跑 notebook
-├── src/
-│   ├── data/
-│   │   ├── dataset.py      # PyTorch Dataset
-│   │   └── transforms.py   # 数据增强
-│   ├── models/
-│   │   ├── unet.py         # 条件 UNet（含 DAPI 条件输入）
-│   │   └── flow_matching.py# FM 训练/采样
-│   ├── losses/             # 损失函数
-│   ├── metrics/            # SSIM / PSNR
-│   ├── train.py            # 训练入口
-│   ├── inference.py        # 推理入口
-│   └── submit.py           # 打包提交
-├── configs/                # YAML 配置
-├── checkpoints/            # 模型权重（已 gitignore）
-├── logs/                   # TensorBoard / 日志（已 gitignore）
-├── submissions/            # 提交结果
-├── requirements.txt
-└── README.md
+src/
+  data/dataset.py        # DAPI/IHC 配对数据集 + 增强
+  models/
+    pix2pix_gan.py       # 生成器 + 判别器
+    losses.py            # GANLoss / CombinedLoss (L1+SSIM)
+  train_pix2pix_v2.py    # 训练入口
+  inference_pix2pix.py   # 推理入口
+  metrics/ssim_psnr.py   # 评价指标
+train_all_markers.py     # 顺序训练多个 marker
+make_submission.py       # 打包 submission.zip
 ```
 
-## 快速开始
+## 训练
+
+单 marker：
 
 ```bash
-# 1. 安装依赖
-pip install -r requirements.txt
-
-# 2. 把数据放到 data/ 目录
-#    训练：DAPI/ 与 IHC_<marker>/ 下分别放同名 patch
-#    测试：只放 DAPI/
-
-# 3. 训练
-python -m src.train --config configs/train_<marker>.yaml
-
-# 4. 推理并提交
-python -m src.inference --ckpt checkpoints/best.pt --marker <marker>
-python -m src.submit --out submissions/run_<timestamp>/
+python -m src.train_pix2pix_v2 --marker CD68 --epochs 30 --batch_size 24
 ```
 
-## 提交记录
+所有 marker：
 
-| 时间 | 模型 | Marker | SSIM | PSNR | 备注 |
-|------|------|--------|------|------|------|
-|      |      |        |      |      |      |
+```bash
+python train_all_markers.py
+```
+
+可调参数（`train_all_markers.py`）：`epochs`、`batch_size`、`lr`、`lambda_l1`、`lambda_ssim`、`num_workers`。
+
+checkpoint 输出到 `checkpoints/pix2pix_v2_<marker>_<timestamp>/epoch{}.pt`，末尾保存 `final.pt`。
+
+## 推理
+
+```bash
+python -m src.inference_pix2pix \
+  --ckpt checkpoints/pix2pix_v2_HLA-DR_xxx/final.pt \
+  --marker HLA-DR \
+  --batch-size 16
+```
+
+输出到 `results/test/<marker>/<input_name>_fake.jpg`。
+
+## 打包
+
+```bash
+python make_submission.py
+```
+
+生成 `submission.zip`，目录结构：
+
+```
+test/<marker>/<input_name>_fake.jpg
+```
+
+## 复现
+
+1. 准备数据集（`data_root/train/{DAPI,IHC_<marker>}`、`data_root/test/DAPI`）
+2. `python train_all_markers.py` （约 ~5 小时，RTX 3090）
+3. 按 marker 逐个跑 `inference_pix2pix.py`
+4. `python make_submission.py`
+
+## 当前最佳成绩
+
+- 初赛平台提交：64.0891（4 个 marker 联合）
+
+## 待优化
+
+- [ ] val 评估 + 保存 best.pt
+- [ ] 增大训练 epoch（30→80+）
+- [ ] 加 patch overlap + 滑窗融合
+- [ ] 尝试 Pix2Pix + Perceptual Loss (VGG)
+- [ ] 尝试 diffusion 模型（Flow Matching 已留接口）

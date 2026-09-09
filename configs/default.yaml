@@ -3,7 +3,7 @@ defaults:
   marker: HLA-DR            # 目标 IHC 标记
   seed: 42
   device: cuda              # cpu / cuda
-  amp: true                 # 混合精度训练
+  amp: false                # 混合精度训练（暂时关闭以避免 NaN）
 
 data:
   root: ./data
@@ -16,7 +16,7 @@ data:
 
 train:
   epochs: 200
-  lr: 2.0e-4
+  lr: 5.0e-5
   weight_decay: 1.0e-5
   scheduler: cosine
   warmup_steps: 1000
