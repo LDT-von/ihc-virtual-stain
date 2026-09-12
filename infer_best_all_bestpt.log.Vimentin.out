@@ -1,0 +1,6 @@
+
+============================================================
+[TTA-4x] marker=Vimentin split=test
+[TTA-4x] ckpt=E:\aic\ihc-virtual-stain\checkpoints\pix2pix_v2_Vimentin_1788988426\best.pt
+[Dataset] test/Vimentin: ур╣╫ 1346 уе DAPI
+[Dataset] test/Vimentin: 1346 уе

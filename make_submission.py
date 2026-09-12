@@ -19,7 +19,7 @@ with zipfile.ZipFile(OUTPUT_ZIP, 'w', zipfile.ZIP_DEFLATED) as zf:
         files = sorted(marker_dir.glob('*_fake.jpg'))
         print(f"[{marker}] adding {len(files)} files")
         for f in files:
-            arcname = f"test/{marker}/{f.name}"
+            arcname = f"results/test/{marker}/{f.name}"
             zf.write(f, arcname)
             total_files += 1
 

@@ -1,0 +1,6 @@
+
+============================================================
+[TTA-4x] marker=CD45RO split=test
+[TTA-4x] ckpt=E:\aic\ihc-virtual-stain\checkpoints\pix2pix_v2_CD45RO_1788978395\best.pt
+[Dataset] test/CD45RO: ур╣╫ 1346 уе DAPI
+[Dataset] test/CD45RO: 1346 уе

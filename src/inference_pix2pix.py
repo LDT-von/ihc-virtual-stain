@@ -31,6 +31,8 @@ def parse_args():
     parser.add_argument("--num-workers", type=int, default=0)  # 避免多进程问题
     parser.add_argument("--jpeg-quality", type=int, default=95)
     parser.add_argument("--device", default="cuda", help="设备")
+    parser.add_argument("--tta", action="store_true", help="开启 TTA（4x 翻转融合，默认开启）")
+    parser.add_argument("--no-tta", action="store_true", help="禁用 TTA")
     return parser.parse_args()
 
 
@@ -103,28 +105,52 @@ def main():
     
     start_time = time.time()
     written = 0
-    
-    with torch.inference_mode():
-        for batch_idx, batch in enumerate(loader):
-            dapi = batch["dapi"].to(device, non_blocking=True)
-            
-            # 生成图像
-            fake_img = model.generator(dapi, dapi)
-            
-            # 保存
-            for index, name in enumerate(batch["name"]):
-                image = Image.fromarray(to_uint8(fake_img[index].cpu()))
-                target = output_dir / f"{name}_fake.jpg"
-                image.save(target, format="JPEG", quality=args.jpeg_quality)
-                written += 1
-            
-            if (batch_idx + 1) % 50 == 0:
-                print(f"[Infer] 已处理 {written} 张图像...")
+
+    use_tta = args.tta and not args.no_tta
+    if not use_tta:
+        # 无 TTA：直接一次前向
+        with torch.inference_mode():
+            for batch_idx, batch in enumerate(loader):
+                dapi = batch["dapi"].to(device, non_blocking=True)
+                fake_img = model.generator(dapi, dapi)
+                if metric is not None:
+                    metric.update(fake_img, batch["ihc"].to(device, non_blocking=True))
+                for index, name in enumerate(batch["name"]):
+                    image = Image.fromarray(to_uint8(fake_img[index].cpu()))
+                    target = output_dir / f"{name}_fake.jpg"
+                    image.save(target, format="JPEG", quality=args.jpeg_quality)
+                    written += 1
+                if (batch_idx + 1) % 50 == 0:
+                    print(f"[Infer] 已处理 {written} 张图像...")
+    else:
+        # 4x TTA：原图 + HFlip + VFlip + HVFlip，取平均
+        print("[Infer] TTA enabled: 4x flip averaging")
+        def tta_forward(dapi_input):
+            outs = [
+                model.generator(dapi_input, dapi_input),
+                torch.flip(model.generator(torch.flip(dapi_input, dims=(3,)), torch.flip(dapi_input, dims=(3,))), dims=(3,)),
+                torch.flip(model.generator(torch.flip(dapi_input, dims=(2,)), torch.flip(dapi_input, dims=(2,))), dims=(2,)),
+                torch.flip(model.generator(torch.flip(dapi_input, dims=(2, 3)), torch.flip(dapi_input, dims=(2, 3))), dims=(2, 3)),
+            ]
+            return torch.stack(outs).mean(dim=0)
+        with torch.inference_mode():
+            for batch_idx, batch in enumerate(loader):
+                dapi = batch["dapi"].to(device, non_blocking=True)
+                fake_img = tta_forward(dapi)
+                if metric is not None:
+                    metric.update(fake_img, batch["ihc"].to(device, non_blocking=True))
+                for index, name in enumerate(batch["name"]):
+                    image = Image.fromarray(to_uint8(fake_img[index].cpu()))
+                    target = output_dir / f"{name}_fake.jpg"
+                    image.save(target, format="JPEG", quality=args.jpeg_quality)
+                    written += 1
+                if (batch_idx + 1) % 50 == 0:
+                    print(f"[Infer] 已处理 {written} 张图像...")
     
     elapsed = time.time() - start_time
     
     print(f"[Infer] 已生成 {written}/{len(dataset)} 张 JPG：{output_dir}")
-    print(f"[Infer] 耗时 {elapsed:.1f}s ({elapsed/max(written,1)*1000:.1f}ms/张)")
+    print(f"[Infer] 耗时 {elapsed:.1f}s ({elapsed/max(written,1)*1000:.1f}ms/张), TTA={'4x flip' if use_tta else 'off'}")
     
     if metric is not None:
         result = metric.result()

@@ -1,0 +1,6 @@
+
+============================================================
+[TTA-4x] marker=CD68 split=test
+[TTA-4x] ckpt=E:\aic\ihc-virtual-stain\checkpoints\pix2pix_v2_CD68_1788969904\best.pt
+[Dataset] test/CD68: ур╣╫ 1346 уе DAPI
+[Dataset] test/CD68: 1346 уе

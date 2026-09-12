@@ -1,0 +1,6 @@
+
+============================================================
+[TTA-4x] marker=HLA-DR split=test
+[TTA-4x] ckpt=E:\aic\ihc-virtual-stain\checkpoints\pix2pix_v2_HLA-DR_1788962683\best.pt
+[Dataset] test/HLA-DR: ур╣╫ 1346 уе DAPI
+[Dataset] test/HLA-DR: 1346 уе

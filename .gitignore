@@ -26,6 +26,7 @@ ENV/
 # 大文件 / 数据 / 模型 / 结果
 checkpoints/
 results/
+results_*/
 *.pt
 *.pth
 *.zip

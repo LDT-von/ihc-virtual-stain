@@ -172,24 +172,29 @@ class UNetGenerator(nn.Module):
             nn.Tanh(),  # 输出范围 [-1, 1]
         )
     
-    def forward(self, x: torch.Tensor, dapi: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, dapi: Optional[torch.Tensor] = None, return_feats: bool = False) -> torch.Tensor:
         """
         Args:
             x: 输入图像 (B, 3, H, W)
             dapi: 条件图像 (B, 3, H, W)
+            return_feats: 是否同时返回 encoder 第 1 层特征（64 通道）
         Returns:
-            生成的图像 (B, 3, H, W)
+            生成的图像 (B, 3, H, W)；若 return_feats=True 则 (img, feat)
+            feat 形状 (B, 64, H/2, W/2)
         """
         # 初始层：将输入与 DAPI 拼接
         if dapi is not None:
             x = torch.cat([x, dapi], dim=1)
         x = self.input_conv(x)
-        
+
         # 编码器：保存跳跃连接
         encoder_outputs = [x]
         for i, enc in enumerate(self.encoder):
             x = enc(x)
             encoder_outputs.append(x)
+            if return_feats and i == 0:
+                # encoder[0] 输出 64 通道 (B, 64, H/2, W/2)
+                feat_for_vsmt = x
         
         # 中间层
         x = self.middle(x)
@@ -209,7 +214,9 @@ class UNetGenerator(nn.Module):
         # 最终上采样恢复尺寸
         x = self.upsample(x)
         x = self.final_conv(x)
-        
+
+        if return_feats:
+            return x, feat_for_vsmt
         return x
 
 
