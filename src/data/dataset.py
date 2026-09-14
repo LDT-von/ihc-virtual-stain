@@ -43,7 +43,7 @@ def build_transforms(patch_size: int, augment: bool) -> A.Compose:
                 A.Affine(scale=(0.9, 1.1), translate_percent=(-0.05, 0.05), rotate=(-15, 15), p=0.3),
                 A.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.1, hue=0.03, p=0.5),
                 A.GaussianBlur(blur_limit=(3, 7), p=0.2),
-                A.GaussNoise(var_limit=(5.0, 25.0), p=0.2),
+                A.GaussNoise(p=0.2),
                 A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5), max_pixel_value=255.0),
                 ToTensorV2(),
             ],
@@ -115,19 +115,18 @@ class UnpairedDAPIDataset(Dataset):
         self.dapi_transform = build_transforms(patch_size, augment and split == "train")
         self.ihc_transform = build_transforms(patch_size, augment and split == "train")
 
-        # val 模式下：自动从 train 划分 val_split%
+        # val 模式：使用 val/ 目录（干净划分，无泄漏）
         if split == "val":
-            import random
-            rng = random.Random(42)
-            n_dapi = len(self.dapi_files)
-            n_ihc = len(self.ihc_files)
-            effective = min(n_dapi, n_ihc)
-            val_n = max(1, int(effective * val_split))
-            val_n = min(val_n, effective - 1)
-            val_indices = sorted(rng.sample(range(effective), val_n))
-            self._val_indices = set(val_indices)
-            self.len_dapi = val_n
-            self.len_ihc = val_n
+            val_dir = self.root / "val"
+            val_dapi = val_dir / "DAPI"
+            ihc_dir = f"IHC_{marker}"
+            ihc_val = val_dir / ihc_dir
+            self.dapi_dir = val_dapi
+            self.ihc_dir = ihc_val if ihc_val.exists() else (val_dir / marker)
+            self.dapi_files = list_image_files(self.dapi_dir)
+            self.ihc_files = list_image_files(self.ihc_dir)
+            self.len_dapi = len(self.dapi_files)
+            self.len_ihc = len(self.ihc_files)
         else:
             self.len_dapi = len(self.dapi_files)
             self.len_ihc = len(self.ihc_files)
@@ -139,10 +138,10 @@ class UnpairedDAPIDataset(Dataset):
     def __getitem__(self, idx: int):
         import random
 
-        if hasattr(self, '_val_indices'):
-            # val 模式：按划分索引
-            dapi_idx = self._val_indices[idx]
-            ihc_idx = self._val_indices[idx]
+        if hasattr(self, '_val_indices') and self.split == "val":
+            # 配对模式：按索引取
+            dapi_idx = idx
+            ihc_idx = idx
         else:
             # train 模式：各自独立采样
             dapi_idx = idx % self.len_dapi

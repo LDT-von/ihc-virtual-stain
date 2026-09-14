@@ -1,7 +1,13 @@
 """SSIM Loss + L1 Loss + Perceptual Loss 用于 Pix2Pix GAN 训练"""
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+
+def clamp_safe(x: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    """安全 clamp：将 x 限制在 [eps, 1-eps] 范围，防止 log(0) 爆炸"""
+    return x.clamp(min=eps, max=1.0 - eps)
 
 
 class SSIMLoss(nn.Module):
@@ -322,10 +328,13 @@ class CSSLoss(nn.Module):
         """
         css_df = self._cs_map(dapi, fake)
         if target is None:
-            return -torch.log(css_df + self.eps).mean()
+            # 用 soft-log 防止 log(0) 爆炸：log(x+eps) 的梯度在 x→0 时会趋近于 1/eps
+            # 用 clamp 确保数值稳定
+            return -torch.log(clamp_safe(css_df, eps=self.eps)).mean()
+
         css_ft = self._cs_map(fake, target)
         css_combined = 0.5 * (css_df + css_ft)
-        return -torch.log(css_combined + self.eps).mean()
+        return -torch.log(clamp_safe(css_combined, eps=self.eps)).mean()
 
 
 # ---------------------------------------------------------------------------
@@ -500,7 +509,7 @@ class PyramidLoss(nn.Module):
             pred:   生成图 (B, 3, H, W) [-1, 1]
             target: 真实图 (B, 3, H, W) [-1, 1]
         Returns:
-            多尺度 L1 加权平均
+            多尺度 L1 加权求和（不归一化，梯度强度与单层 L1 一致）
         """
         pred_pyr = self.pyramid(pred)
         target_pyr = self.pyramid(target)
@@ -508,24 +517,25 @@ class PyramidLoss(nn.Module):
         loss = 0.0
         for w, p, t in zip(self.weights, pred_pyr, target_pyr):
             loss = loss + w * F.l1_loss(p, t)
-        return loss / sum(self.weights)
+        return loss
 
 
 class PyramidL1SSIMLoss(nn.Module):
     """
-    PyramidPix2Pix + SSIM 组合损失（v6 主力损失）。
+    PyramidPix2Pix + SSIM 组合损失（v11 主力损失）。
 
     公式:
         L = λ_pyr * PyramidL1(pred, target)
-          + λ_ssim * SSIM(pred, target)
+          + λ_ssim * SSIM(pred, target)     ← 仅在原始分辨率
 
-    相比 v5 的 L1SSIMLoss（仅原始分辨率）：
-      - 多尺度 L1 强化结构全局一致性
-      - SSIM 仅在原始分辨率计算（保证细节锐利）
+    相比 v6 的 PyramidL1SSIMLoss：
+      - PyramidLoss 不再除以 sum(weights)，梯度强度与单层 L1 一致
+      - SSIM 在原始分辨率（256x256）计算，保证细节锐利
+      - 两项损失权重独立可调
 
     Args:
         pyramid_weight: 多尺度 L1 权重（默认 100，与原 L1 weight 对齐）
-        ssim_weight: SSIM 权重（默认 50，与 v5 一致）
+        ssim_weight: SSIM 权重（默认 50，与 v2 一致）
         levels: 金字塔层数（默认 4）
         pyr_weights: 每层金字塔权重（默认 [1, 1, 1, 1]）
     """

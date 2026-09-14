@@ -6,14 +6,25 @@ from skimage.metrics import structural_similarity as _ssim
 
 
 def to_uint8(tensor: torch.Tensor) -> np.ndarray:
-    """将范围 [-1, 1] 的 CHW 张量转换为 RGB uint8 图像。"""
+    """将范围 [-1, 1] 的 CHW 张量转换为 HxWxC uint8 图像。"""
     image = (tensor.detach().cpu().clamp(-1, 1) + 1) * 127.5
     return image.permute(1, 2, 0).numpy().astype(np.uint8)
 
 
 def ssim(prediction: torch.Tensor, target: torch.Tensor, data_range: int = 255) -> float:
     """SSIM（使用 skimage，输入必须是单张 HxWxC uint8）"""
-    return float(_ssim(to_uint8(prediction), to_uint8(target), channel_axis=-1, data_range=data_range))
+    p8 = to_uint8(prediction)
+    t8 = to_uint8(target)
+    # 兼容新旧版本 skimage
+    import inspect
+    sig = inspect.signature(_ssim)
+    if 'channel_axis' in sig.parameters:
+        return float(_ssim(p8, t8, channel_axis=-1, data_range=data_range))
+    elif 'multichannel' in sig.parameters:
+        return float(_ssim(p8, t8, multichannel=True, data_range=data_range))
+    else:
+        # 回退：手动指定 win_size
+        return float(_ssim(p8, t8, data_range=data_range))
 
 
 def ssim_gpu_single(prediction: torch.Tensor, target: torch.Tensor) -> float:
