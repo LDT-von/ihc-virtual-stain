@@ -27,7 +27,7 @@ def ssim(prediction: torch.Tensor, target: torch.Tensor, data_range: int = 255) 
         return float(_ssim(p8, t8, data_range=data_range))
 
 
-def ssim_gpu_single(prediction: torch.Tensor, target: torch.Tensor) -> float:
+def legacy_global_ssim_single(prediction: torch.Tensor, target: torch.Tensor) -> float:
     """单张图的 SSIM (GPU)。输入 3xHxW, 范围 [-1, 1]。
     使用全图均值方差近似（和 v6 训练时一致）。
     data_range = 2.0（因为值域是 [-1, 1]）
@@ -53,6 +53,23 @@ def ssim_gpu_single(prediction: torch.Tensor, target: torch.Tensor) -> float:
     return ssim_map.mean().item()
 
 
+def ssim_gpu_single(prediction: torch.Tensor, target: torch.Tensor) -> float:
+    """Local-window SSIM on continuous [0,1] intensities; input CHW in [-1,1].
+
+    The former global approximation remains available explicitly as
+    legacy_global_ssim_single, but must not be reported as standard SSIM.
+    JPEG quantization is not part of this function.
+    """
+    from ..models.marker_context import local_ssim
+    if prediction.ndim != 3 or prediction.shape != target.shape:
+        raise ValueError('Expected equally shaped CHW tensors')
+    if not torch.isfinite(prediction).all() or not torch.isfinite(target).all():
+        raise ValueError('Non-finite metric input')
+    p = (prediction.detach().clamp(-1, 1).unsqueeze(0)+1)/2
+    t = (target.detach().clamp(-1, 1).unsqueeze(0)+1)/2
+    return local_ssim(p, t).mean().item()
+
+
 def psnr_gpu_single(prediction: torch.Tensor, target: torch.Tensor) -> float:
     """单张图的 PSNR (GPU)。data_range=2.0（值域 [-1, 1]）"""
     pred = prediction.clamp(-1, 1)
@@ -74,6 +91,10 @@ class MetricAggregator:
         self.n = 0
 
     def update(self, prediction: torch.Tensor, target: torch.Tensor) -> None:
+        if prediction.shape != target.shape:
+            raise ValueError('Metric input shapes do not match')
+        if prediction.ndim == 3:
+            prediction, target = prediction.unsqueeze(0), target.unsqueeze(0)
         # 4D NCHW 批量输入：逐张算
         if prediction.dim() != 4:
             raise ValueError("MetricAggregator 需要 4D NCHW 批量输入")
@@ -87,5 +108,5 @@ class MetricAggregator:
 
     def result(self) -> dict[str, float]:
         if self.n == 0:
-            return {"ssim": 0.0, "psnr": 0.0}
+            raise ValueError('Cannot report metrics for an empty evaluation set')
         return {"ssim": self.ssim_sum / self.n, "psnr": self.psnr_sum / self.n}

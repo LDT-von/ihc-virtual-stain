@@ -42,18 +42,8 @@ def tta_4x(model, dapi):
 
 
 def tta_8x(model, dapi):
-    outs = []
-    for c in range(4):
-        if c == 0: d = dapi
-        elif c == 1: d = torch.flip(dapi, dims=(3,))
-        elif c == 2: d = torch.flip(dapi, dims=(2,))
-        else: d = torch.flip(dapi, dims=(2, 3))
-        for rot in range(4):
-            d_rot = torch.rot90(d, rot, dims=(2, 3))
-            out = model.generator(d_rot, d_rot)
-            out = torch.rot90(out, -rot, dims=(2, 3))
-            outs.append(out)
-    return torch.stack(outs).mean(dim=0)
+    from inference_8x_tta import tta_8x_forward
+    return tta_8x_forward(model, dapi)
 
 
 def evaluate(marker, ckpt, tta_mode, batch_size, device, data_root):

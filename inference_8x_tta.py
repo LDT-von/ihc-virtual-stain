@@ -69,21 +69,16 @@ def tta_4x_forward(model, dapi: torch.Tensor) -> torch.Tensor:
 
 
 def tta_8x_forward(model, dapi: torch.Tensor) -> torch.Tensor:
-    """8x TTA：4 翻转 × 4 旋转"""
+    """Eight unique D4 transforms, with both flip and rotation inverted."""
     outputs = []
-    for flip_code in range(4):
-        if flip_code == 0:
-            d = dapi
-        elif flip_code == 1:
-            d = torch.flip(dapi, dims=(3,))
-        elif flip_code == 2:
-            d = torch.flip(dapi, dims=(2,))
-        else:
-            d = torch.flip(dapi, dims=(2, 3))
+    for flip in (False, True):
+        d = torch.flip(dapi, dims=(3,)) if flip else dapi
         for rot in range(4):
             d_rot = torch.rot90(d, rot, dims=(2, 3))
             out = model.generator(d_rot, d_rot)
             out = torch.rot90(out, -rot, dims=(2, 3))
+            if flip:
+                out = torch.flip(out, dims=(3,))
             outputs.append(out)
     return torch.stack(outputs).mean(dim=0)
 
@@ -94,7 +89,7 @@ def run_inference(marker: str, ckpt_path: Path, data_root: Path,
                    val_split: float = 0.05, tta_mode: str = '8x'):
     """对单个 marker 运行 TTA 推理
     
-    tta_mode: '8x' = 4 翻转 × 4 旋转; '4x' = 4 翻转
+    tta_mode: '8x' = 2 flip states x 4 rotations; '4x' = 4 flips
     """
     print(f"\n{'='*60}")
     print(f"[TTA-{tta_mode}] marker={marker} split={split}")
@@ -201,7 +196,7 @@ def main():
         r = run_inference(
             marker=marker, ckpt_path=ckpt, data_root=data_root,
             output_dir=output_dir, batch_size=args.batch_size,
-            device=device, compute_metrics=True, split=args.split,
+            device=device, compute_metrics=args.split != 'test', split=args.split,
             val_split=args.val_split, tta_mode=args.tta_mode,
         )
         if r:
@@ -217,7 +212,7 @@ def main():
     if results:
         avg = total_ssim / len(results)
         print(f"\n  平均 SSIM: {avg:.4f}")
-        print(f"  对应平台分: {avg * 100:.2f}")
+        print("  此为本地 SSIM，不是平台综合分（PSNR 归一化公式未确认）")
     print(f"  结果目录: {output_root}")
     print('='*60)
 
