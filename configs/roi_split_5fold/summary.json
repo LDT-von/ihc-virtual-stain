@@ -1,0 +1,172 @@
+[
+  {
+    "fold": 0,
+    "train": 4029,
+    "val": 1007,
+    "train_rois": [
+      "ROI000",
+      "ROI001",
+      "ROI002",
+      "ROI003",
+      "ROI004",
+      "ROI006",
+      "ROI007",
+      "ROI008",
+      "ROI009",
+      "ROI010",
+      "ROI011",
+      "ROI013",
+      "ROI015",
+      "ROI016",
+      "ROI017",
+      "ROI019",
+      "ROI020",
+      "ROI021",
+      "ROI023",
+      "ROI024"
+    ],
+    "val_rois": [
+      "ROI005",
+      "ROI012",
+      "ROI014",
+      "ROI018",
+      "ROI022"
+    ]
+  },
+  {
+    "fold": 1,
+    "train": 4118,
+    "val": 918,
+    "train_rois": [
+      "ROI000",
+      "ROI001",
+      "ROI002",
+      "ROI003",
+      "ROI005",
+      "ROI007",
+      "ROI008",
+      "ROI010",
+      "ROI011",
+      "ROI012",
+      "ROI013",
+      "ROI014",
+      "ROI016",
+      "ROI017",
+      "ROI018",
+      "ROI019",
+      "ROI020",
+      "ROI022",
+      "ROI023",
+      "ROI024"
+    ],
+    "val_rois": [
+      "ROI004",
+      "ROI006",
+      "ROI009",
+      "ROI015",
+      "ROI021"
+    ]
+  },
+  {
+    "fold": 2,
+    "train": 3984,
+    "val": 1052,
+    "train_rois": [
+      "ROI001",
+      "ROI002",
+      "ROI003",
+      "ROI004",
+      "ROI005",
+      "ROI006",
+      "ROI008",
+      "ROI009",
+      "ROI010",
+      "ROI011",
+      "ROI012",
+      "ROI013",
+      "ROI014",
+      "ROI015",
+      "ROI016",
+      "ROI017",
+      "ROI018",
+      "ROI019",
+      "ROI021",
+      "ROI022"
+    ],
+    "val_rois": [
+      "ROI000",
+      "ROI007",
+      "ROI020",
+      "ROI023",
+      "ROI024"
+    ]
+  },
+  {
+    "fold": 3,
+    "train": 3907,
+    "val": 1129,
+    "train_rois": [
+      "ROI000",
+      "ROI002",
+      "ROI003",
+      "ROI004",
+      "ROI005",
+      "ROI006",
+      "ROI007",
+      "ROI009",
+      "ROI010",
+      "ROI011",
+      "ROI012",
+      "ROI013",
+      "ROI014",
+      "ROI015",
+      "ROI018",
+      "ROI020",
+      "ROI021",
+      "ROI022",
+      "ROI023",
+      "ROI024"
+    ],
+    "val_rois": [
+      "ROI001",
+      "ROI008",
+      "ROI016",
+      "ROI017",
+      "ROI019"
+    ]
+  },
+  {
+    "fold": 4,
+    "train": 4106,
+    "val": 930,
+    "train_rois": [
+      "ROI000",
+      "ROI001",
+      "ROI004",
+      "ROI005",
+      "ROI006",
+      "ROI007",
+      "ROI008",
+      "ROI009",
+      "ROI012",
+      "ROI014",
+      "ROI015",
+      "ROI016",
+      "ROI017",
+      "ROI018",
+      "ROI019",
+      "ROI020",
+      "ROI021",
+      "ROI022",
+      "ROI023",
+      "ROI024"
+    ],
+    "val_rois": [
+      "ROI002",
+      "ROI003",
+      "ROI010",
+      "ROI011",
+      "ROI013"
+    ]
+  }
+]
