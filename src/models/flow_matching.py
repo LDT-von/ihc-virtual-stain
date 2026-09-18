@@ -114,29 +114,32 @@ class FlowMatching(nn.Module):
 
         dt = 1.0 / num_steps
 
+        # 训练时: x_t = (1 - t) * x_0 + t * ε, v_target = x_0 - ε
+        # 采样: 从 t=1 (噪声) 反向 ODE 积分到 t=0 (x_0)
+        #       dx/dt = v_target = x_0 - ε  =>  x_{t-dt} = x_t - dt * v(x_t, t)
         if solver == "heun":
             # Heun's method（二阶 Runge-Kutta）
             for i in range(num_steps):
-                t_now = i / num_steps
+                t_now = 1.0 - i / num_steps           # 1.0 → 1/N
                 t_now_t = torch.full((B,), t_now, device=device, dtype=x.dtype)
 
                 # Euler 预测
                 v1 = self.model(x, t_now_t, dapi)
-                x_mid = x + dt * v1
+                x_mid = x - dt * v1
 
                 # Heun 修正
-                t_next = (i + 1) / num_steps
+                t_next = 1.0 - (i + 1) / num_steps    # (N-1)/N → 0
                 t_next_t = torch.full((B,), t_next, device=device, dtype=x.dtype)
                 v2 = self.model(x_mid, t_next_t, dapi)
-                x = x + dt * 0.5 * (v1 + v2)
+                x = x - dt * 0.5 * (v1 + v2)
 
         else:
-            # Euler 前向欧拉
+            # Euler：从噪声反向积分到 x_0
             for i in range(num_steps):
-                t_now = i / num_steps
+                t_now = 1.0 - i / num_steps           # 1.0 → 1/N
                 t_now_t = torch.full((B,), t_now, device=device, dtype=x.dtype)
                 v = self.model(x, t_now_t, dapi)
-                x = x + dt * v
+                x = x - dt * v
 
         return x
 

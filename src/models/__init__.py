@@ -1,19 +1,25 @@
 """模型模块"""
 from .pix2pix_gan import Pix2PixGAN, UNetGenerator, PatchDiscriminator, build_pix2pix_model
 from .losses import (
-    SSIMLoss, 
-    L1SSIMLoss, 
-    PerceptualLoss, 
-    GANLoss, 
+    SSIMLoss,
+    L1SSIMLoss,
+    PerceptualLoss,
+    GANLoss,
     CombinedLoss,
     CombinedLoss as ImageLoss,
 )
 from .flow_matching import FlowMatching, FlowMatchingConfig, build_model
+from .stable_diffusion import (
+    SimpleVirtualStainDiffusion,
+    SimpleDiffusionConfig,
+    SimpleDiffusionUNet,
+    build_simple_stain_sd,
+)
 
 __all__ = [
     # Pix2Pix GAN
     "Pix2PixGAN",
-    "UNetGenerator", 
+    "UNetGenerator",
     "PatchDiscriminator",
     "build_pix2pix_model",
     # 损失函数
@@ -27,4 +33,9 @@ __all__ = [
     "FlowMatching",
     "FlowMatchingConfig",
     "build_model",
+    # Stable Diffusion (简化版 - 像素空间扩散)
+    "SimpleVirtualStainDiffusion",
+    "SimpleDiffusionConfig",
+    "SimpleDiffusionUNet",
+    "build_simple_stain_sd",
 ]

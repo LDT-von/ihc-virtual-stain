@@ -454,6 +454,11 @@ def main():
                    default='E:/aic/ihc-virtual-stain/初赛数据集（包含训练集和测试集输入）/初赛数据集（包含训练集和测试集输入）')
     p.add_argument('--use_val_split', action='store_true')
     args = p.parse_args()
+    # 支持 IHC_DATA_ROOT 环境变量（避免 PowerShell 传中文 argv 时的编码陷阱）
+    import os as _os
+    env_root = _os.environ.get('IHC_DATA_ROOT')
+    if env_root:
+        args.data_root = env_root
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     MARKERS = ['HLA-DR', 'CD68', 'CD45RO', 'Vimentin']
