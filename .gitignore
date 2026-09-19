@@ -47,6 +47,15 @@ results_*/
 *.tmp
 *.bak
 _find_big_files.py
+chain_train.ps1
+chain_train_remaining.ps1
+ckpts.txt
+fulllist.txt
+infer_*_50ep.err
+outputs/
+
+# 临时工具脚本
+_find_big_files.py
 
 # 系统
 .DS_Store
