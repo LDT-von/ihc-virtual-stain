@@ -40,6 +40,8 @@ def validate_manifest(manifest):
             raise ValueError('ROI/sample leakage between splits')
         seen_names.update(names)
         seen_rois.update(groups)
+    if digest(sorted(seen_names)) != manifest['inventory_names_sha256']:
+        raise ValueError('Split union does not match the complete dataset inventory')
 
 
 def build_manifest(root, destination, seed=42, val_rois=3, holdout_rois=3):

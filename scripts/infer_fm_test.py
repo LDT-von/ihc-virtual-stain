@@ -8,7 +8,7 @@ Usage:
         --output-dir results/HLA-DR_fm_submission
 """
 import argparse
-import builtins
+import json
 import sys
 import time
 from pathlib import Path
@@ -22,19 +22,6 @@ ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(ROOT))
 
 
-# 保存原始 print 后再替换，避免递归
-_original_print = print
-def _safe_print(*a, **k):
-    k.setdefault('flush', True)
-    try:
-        _original_print(*a, **k)
-    except UnicodeEncodeError:
-        safe = [str(x).encode('gbk', errors='replace').decode('gbk') for x in a]
-        _original_print(*safe, **k)
-
-
-builtins.print = _safe_print
-
 from src.data.dataset import DAPItoIHCDataset
 from src.models.flow_matching import FlowMatching, FlowMatchingConfig, build_model
 
@@ -46,23 +33,31 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--ckpt', required=True)
     p.add_argument('--marker', required=True, choices=MARKERS)
-    p.add_argument('--data-root', default=r'E:\aic\初赛数据集（包含训练集和测试集输入）')
+    p.add_argument('--data-root', required=True)
     p.add_argument('--output-dir', default='results/HLA-DR_fm_submission')
     p.add_argument('--batch-size', type=int, default=8)
     p.add_argument('--jpeg-quality', type=int, default=95)
     p.add_argument('--num-steps', type=int, default=50,
-                   help='ODE sampling steps; must match training cfg to be safe')
+                   help='ODE sampling steps (overrides checkpoint default)')
+    p.add_argument('--seed', type=int, default=42)
+    p.add_argument('--solver', choices=('euler', 'heun'), default='heun')
     return p.parse_args()
 
 
 def main():
+    sys.stdout.reconfigure(encoding='utf-8')
     args = parse_args()
+    torch.manual_seed(args.seed)
+    if args.batch_size < 1 or not 1 <= args.jpeg_quality <= 100:
+        raise ValueError('Invalid batch size or JPEG quality')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'[FM-Infer] marker={args.marker} ckpt={args.ckpt}')
 
     # 加载 checkpoint
     ck = torch.load(args.ckpt, map_location=device, weights_only=False)
     cfg = ck['cfg']
+    if cfg['defaults']['marker'] != args.marker:
+        raise ValueError('Checkpoint marker does not match requested output marker')
     model_cfg = cfg['model']
     fm_cfg = cfg.get('flow_matching', {})
 
@@ -79,7 +74,7 @@ def main():
     model.load_state_dict(ck['model'], strict=True)
     model.eval()
     print(f'[FM-Infer] loaded epoch {ck.get("epoch")}, '
-          f'sampling steps={fm_cfg.get("num_sampling_steps", args.num_steps)}')
+          f'sampling steps={args.num_steps}, solver={args.solver}, seed={args.seed}')
 
     # FlowMatching wrapper (for reverse ODE sampling)
     fm = FlowMatching(model, FlowMatchingConfig(
@@ -98,6 +93,8 @@ def main():
         augment=False,
     )
     print(f'[FM-Infer] test set size: {len(test_ds)}')
+    if not test_ds:
+        raise ValueError('No test DAPI images')
 
     loader = DataLoader(
         test_ds,
@@ -108,7 +105,9 @@ def main():
     )
 
     # 输出目录
-    out_dir = Path(args.output_dir) / args.marker
+    out_dir = Path(args.output_dir) / 'results' / 'test' / args.marker
+    if out_dir.exists() and any(out_dir.iterdir()):
+        raise FileExistsError('Use an empty output directory to avoid mixing predictions')
     out_dir.mkdir(parents=True, exist_ok=True)
     print(f'[FM-Infer] output -> {out_dir}')
 
@@ -118,28 +117,24 @@ def main():
     with torch.no_grad():
         for batch_idx, batch in enumerate(loader):
             dapi = batch['dapi'].to(device)
-            # fm.sample(condition=dapi) 返回 IHC RGB 图像, 已 clamp 到 [-1, 1]
-            ihc = fm.sample(dapi)
+            # Integrate the learned cleanward field; clamp only the final image.
+            ihc = fm.sample(dapi, num_steps=args.num_steps, solver=args.solver)
             ihc = ihc.clamp(-1.0, 1.0)
 
             # 反归一化到 [0, 255] uint8
-            ihc_np = ((ihc + 1.0) * 127.5).clamp(0, 255).to(torch.uint8).cpu().numpy()
+            ihc_np = ((ihc + 1.0) * 127.5).round().clamp(0, 255).to(torch.uint8).cpu().numpy()
             ihc_np = np.transpose(ihc_np, (0, 2, 3, 1))  # NCHW -> NHWC
 
             # 取文件名（dataset 返回 dict 可能含 filename/path）
             # DAPItoIHCDataset 默认 __getitem__ 返回 {'dapi', 'ihc', 'name' 或 'path'}
-            names = batch.get('name') or batch.get('filename') or batch.get('path')
-            if names is None:
-                # 退路：用 batch index
-                names = [f'unknown_{batch_idx * args.batch_size + i:04d}.jpg'
-                         for i in range(ihc_np.shape[0])]
+            names = batch['name']
 
             for i in range(ihc_np.shape[0]):
                 fname = names[i] if isinstance(names, (list, tuple)) else str(names)
                 # 保证 .jpg 后缀
                 if not fname.lower().endswith(('.jpg', '.jpeg', '.png')):
                     fname = fname + '.jpg'
-                out_path = out_dir / fname
+                out_path = out_dir / (Path(fname).stem + '_fake.jpg')
                 Image.fromarray(ihc_np[i]).save(out_path, quality=args.jpeg_quality)
                 saved += 1
 
@@ -151,6 +146,11 @@ def main():
 
     print(f'[FM-Infer] DONE. {saved} files saved in {out_dir} '
           f'(total time {time.time() - t0:.1f}s)')
+    (Path(args.output_dir)/f'provenance_{args.marker}.json').write_text(json.dumps({
+        'checkpoint': str(Path(args.ckpt).resolve()), 'marker': args.marker, 'images': saved,
+        'num_steps': args.num_steps, 'solver': args.solver, 'seed': args.seed,
+        'jpeg_quality': args.jpeg_quality, 'sampling_direction': 'positive cleanward velocity'
+    }, indent=2), encoding='utf-8')
 
 
 if __name__ == '__main__':

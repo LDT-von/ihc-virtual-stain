@@ -1,5 +1,20 @@
 # IHC Virtual Stain (DAPI → IHC)
 
+## 当前主线：IHC Ultimate v1（2026-09-20，待完整性能验收）
+
+冻结 MCN 基准，利用 DAPI 与基准的四标记预测进行联合残差精修；四个独立解码器从零修正开始。
+同一验证集、同一 TTA 和 JPEG 编码下，某标记只有 SSIM 提升且 PSNR 不降才启用精修，否则保留基准。
+
+```bash
+python scripts/run_final.py --data-root "DATA_ROOT" --run-dir checkpoints/ultimate_v1 --mode train
+python scripts/run_final.py --data-root "DATA_ROOT" --run-dir checkpoints/ultimate_v1 --mode evaluate
+python scripts/run_final.py --data-root "DATA_ROOT" --run-dir checkpoints/ultimate_v1 --mode predict --output predictions/ultimate_v1
+```
+
+训练、恢复、历史权重接入、独立评估及提交说明见 [ULTIMATE_IHC.md](docs/ULTIMATE_IHC.md)。
+**已通过 23 项回归测试和真实数据流程检查；尚无完整新权重或平台成绩，不能宣称超过用户记录的 67.9114。**
+历史 FM 修复另见 [FINAL_IHC.md](docs/FINAL_IHC.md)，不能用 FM 的错误解释 MCN/UNet 的分数。下方是历史方案记录。
+
 AIC 2026 初赛 — DAPI 荧光图到 IHC 染色图的虚拟染色任务。
 
 ## 新候选：MarkerContextNet v1（2026-09-15）

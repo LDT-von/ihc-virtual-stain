@@ -43,6 +43,12 @@ results_*/
 **/IHC_*/
 
 # 日志与临时文件
+logs/
+status.txt
+*.err
+*.out
+.codegraph/
+tmp/
 *.log
 *.tmp
 *.bak

@@ -1,0 +1,289 @@
+{
+  "date": "2026-09-20",
+  "base_commit": "6e60f0194d5dda9c19a96eb0d3acaa8f22425f6d",
+  "local_branch": "codex/final-ihc",
+  "status": "code and pipeline validated; full training and official improvement NOT validated",
+  "unit_regression": {
+    "passed": 18,
+    "failed": 0,
+    "seconds": 20.04
+  },
+  "fm_cli_integration": {
+    "purpose": "pipeline integration; not model quality evaluation",
+    "marker": "CD68",
+    "official_test_used": false,
+    "checks": [
+      {
+        "name": "training_cli_to_checkpoint",
+        "passed": true,
+        "detail": "One real training pair -> optimizer update -> final checkpoint",
+        "seconds": 8.42
+      },
+      {
+        "name": "real_pair_checkpoint_roundtrip",
+        "passed": true,
+        "detail": "Real 256x256 pair; one update; all saved/restored parameters identical",
+        "seconds": 2.151
+      },
+      {
+        "name": "validation_inference_cli",
+        "passed": true,
+        "detail": "CLI reload -> image generation -> 256x256 output -> metrics against real target",
+        "seconds": 4.838
+      },
+      {
+        "name": "unlabelled_inference_metric_contract",
+        "passed": true,
+        "detail": "Unlabelled inference produces images without fabricated reference metrics",
+        "seconds": 4.918
+      },
+      {
+        "name": "submission_archive_contract",
+        "passed": true,
+        "detail": "Preliminary archive contains exactly the expected official JPEG path",
+        "seconds": 0.127
+      }
+    ],
+    "fixture_names": [
+      "ROI000_00_00.jpg",
+      "ROI001_00_00.jpg"
+    ],
+    "fixture_note": "One optimizer step; 256x256; disjoint ROI fixture only.",
+    "seconds": 20.515,
+    "passed": 5,
+    "failed": 0
+  },
+  "flow_oracle": {
+    "target": 0.0,
+    "initial_noise": 1.0,
+    "perfect_velocity": -1.0,
+    "old_euler_and_heun_endpoint": 2.0,
+    "fixed_endpoint": 0.0
+  },
+  "dataset": {
+    "source_commit": "08dd1387^",
+    "paired_training_count": 6296,
+    "test_input_count": 1346,
+    "split_sha256": "aeabdc68c8c6d2993aeb22a1368404a36ad49f80f421c02415a3d1c39e9efbff",
+    "split_counts": {
+      "train": 4813,
+      "val": 677,
+      "holdout": 806
+    },
+    "restored_locally_only": true
+  },
+  "model": {
+    "name": "MarkerSpecificNet",
+    "width": 24,
+    "parameters": 1738613
+  },
+  "gpu_check": {
+    "device": "NVIDIA GeForce RTX 3060 Laptop GPU",
+    "batch": 2,
+    "shape": [
+      256,
+      256
+    ],
+    "peak_allocated_mib": 1951.30712890625,
+    "all_gradients_finite": true,
+    "note": "One synthetic forward/backward; not full optimizer memory"
+  },
+  "real_data_sanity": {
+    "purpose": "pipeline and learning sanity only; NOT model quality evidence",
+    "width": 8,
+    "training_count": 128,
+    "validation_count": 64,
+    "epochs": 3,
+    "optimizer_steps": 192,
+    "overflow_batches": 0,
+    "history": [
+      {
+        "epoch": 1,
+        "loss": 0.4986737696453929,
+        "lr": 0.00039067311744347483,
+        "best_ssim": 0.5916396018583328,
+        "elapsed": 13.632314900001802,
+        "skipped_overflow_batches": 0,
+        "validation": {
+          "count": 64,
+          "ssim": 0.5916396018583328,
+          "psnr": 20.49326876178384,
+          "markers": {
+            "HLA-DR": {
+              "ssim": 0.6705035967752337,
+              "psnr": 21.130329683423042
+            },
+            "CD68": {
+              "ssim": 0.5868437141180038,
+              "psnr": 21.050188601017
+            },
+            "CD45RO": {
+              "ssim": 0.48320073913782835,
+              "psnr": 20.93573769927025
+            },
+            "Vimentin": {
+              "ssim": 0.6260103574022651,
+              "psnr": 18.856819063425064
+            }
+          },
+          "rois": {
+            "ROI009": {
+              "ssim": 0.5811216302893378,
+              "psnr": 19.86780595779419
+            },
+            "ROI012": {
+              "ssim": 0.5640080703253095,
+              "psnr": 20.13518111272292
+            },
+            "ROI016": {
+              "ssim": 0.6336040552705526,
+              "psnr": 21.575174260139466
+            }
+          },
+          "tta": 1,
+          "jpeg_quality": 95,
+          "seconds": 1.7543603000012808
+        }
+      },
+      {
+        "epoch": 2,
+        "loss": 0.4823342268355191,
+        "lr": 0.00016570323641382348,
+        "best_ssim": 0.5949221051996574,
+        "elapsed": 14.050428499998816,
+        "skipped_overflow_batches": 0,
+        "validation": {
+          "count": 64,
+          "ssim": 0.5949221051996574,
+          "psnr": 20.496014550328255,
+          "markers": {
+            "HLA-DR": {
+              "ssim": 0.6726756854914129,
+              "psnr": 21.174300849437714
+            },
+            "CD68": {
+              "ssim": 0.5868206918239594,
+              "psnr": 21.023398756980896
+            },
+            "CD45RO": {
+              "ssim": 0.4881004272028804,
+              "psnr": 20.874264419078827
+            },
+            "Vimentin": {
+              "ssim": 0.6320916162803769,
+              "psnr": 18.912094175815582
+            }
+          },
+          "rois": {
+            "ROI009": {
+              "ssim": 0.5831019021570683,
+              "psnr": 19.8324762691151
+            },
+            "ROI012": {
+              "ssim": 0.5676553239199248,
+              "psnr": 20.160860657691956
+            },
+            "ROI016": {
+              "ssim": 0.6379177879542113,
+              "psnr": 21.594575941562653
+            }
+          },
+          "tta": 1,
+          "jpeg_quality": 95,
+          "seconds": 1.8232222000006004
+        }
+      },
+      {
+        "epoch": 3,
+        "loss": 0.4812498465180397,
+        "lr": 5.00301189703486e-05,
+        "best_ssim": 0.5949221051996574,
+        "elapsed": 13.320977800001856,
+        "skipped_overflow_batches": 0,
+        "validation": {
+          "count": 64,
+          "ssim": 0.5940568984951824,
+          "psnr": 20.50333946198225,
+          "markers": {
+            "HLA-DR": {
+              "ssim": 0.6705597350373864,
+              "psnr": 21.144749149680138
+            },
+            "CD68": {
+              "ssim": 0.5869247443042696,
+              "psnr": 21.016686409711838
+            },
+            "CD45RO": {
+              "ssim": 0.48777508176863194,
+              "psnr": 20.924202531576157
+            },
+            "Vimentin": {
+              "ssim": 0.6309680328704417,
+              "psnr": 18.92771975696087
+            }
+          },
+          "rois": {
+            "ROI009": {
+              "ssim": 0.5828350179574706,
+              "psnr": 19.856010686267506
+            },
+            "ROI012": {
+              "ssim": 0.5665552541613579,
+              "psnr": 20.15926707874645
+            },
+            "ROI016": {
+              "ssim": 0.6366527758538723,
+              "psnr": 21.59388073682785
+            }
+          },
+          "tta": 1,
+          "jpeg_quality": 95,
+          "seconds": 1.7858391999980086
+        }
+      }
+    ]
+  },
+  "source_sha256": {
+    "src/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "src/data/__init__.py": "e4d1a9f64deb056131c5ee912b759d92f240296789f5c995508a5f06c3d4cb8d",
+    "src/data/dataset.py": "3639ab956e159f22223e20def97c9925e58df88a9738236f636a7c1886caab69",
+    "src/data/roi_manifest.py": "2c2c1cbcca3c5d7e4362e6a2fb2797e7bf4338ab8b1e4843ac612b668d0ba892",
+    "src/inference.py": "46efc7e9d14309a2b3fa47885241efa50bfb55c85f3deee0f4b38446710c55d0",
+    "src/inference_pix2pix.py": "6e3b3cef8c4b0ef6889570f503a5ae37ecf7400ec18bad8ea6f5104d8e91dbe9",
+    "src/metrics/ssim_psnr.py": "1b326f295f10a475c5307ffe2d4a7cb3b25b54c1b1a6fca175e041a3cf333519",
+    "src/models/__init__.py": "4753335e97f7d8ca944df862a4391c93ba8d19875e3214b3811a8dbf8c2b12c8",
+    "src/models/cut_model.py": "406dc80937c2b740f1a29319fdc98bd66e46c13308fee470396cbb419472f11a",
+    "src/models/flow_matching.py": "7207f813aacbd23bc3e92a79826a0e06a90878739979bfabe7b887d8943277be",
+    "src/models/losses.py": "57307c98be37ee539d5171415963145fedb0d34a4e2b06ea7ce4c6a92cdaac9f",
+    "src/models/marker_context.py": "159964de478848caf1e2ac416fc86025c67bd7059f908797852e4a7ac0fd59d7",
+    "src/models/marker_specific.py": "408a35fc687a5e771c067bc6afd2baa471444d4eb7c616119dad4e284c5de55f",
+    "src/models/patchnce.py": "621659925940781f8112d1877b15f202aba1b9c604533d24a805f45b326a8a04",
+    "src/models/pix2pix_gan.py": "558ebb66a7f86f5e9ee69ceab9c306e2253367fb2a4c91d722361e2f0fe74eda",
+    "src/models/stable_diffusion.py": "75ea67018f7ba359a5f861d60a70b1635ed8913f0433be877944d175f8df23a2",
+    "src/models/unet.py": "0216bf55cfb749648c2982d6b58825069619fab658ca627670cc3cd4f0080cee",
+    "src/models/vsmt.py": "e54a827e7cb375b63e439362152602989d32a53854d66114a3899f1a4ea7b9c8",
+    "src/submit.py": "dcc34c7de58473d7e54a140b8b4e89a506d8ebdf05a1356d0f94ce05b0cc7e4f",
+    "src/train.py": "27f8a29303bf3c0e936ba8618d20c51dea411000150f63ad8e064957af28bc7d",
+    "src/train_cut.py": "2e4c9f723c781117e8227feff65699349b581747058f2da87550fdd33827044f",
+    "src/train_marker_context.py": "c4fe0c7eff8557c0616e477ce41aefa1d23983fe2326ab78ae65ff12bf95bd90",
+    "src/train_pix2pix.py": "d5c09de5030b6c3740d8e9bf83ab1c63c8a665ef8f2f487b4ca449fc122caaf2",
+    "src/train_pix2pix_simple.py": "b834b0824ae05909ff23e9e7de6307990a2ef64ec31c2d0485e4e4050a410d3f",
+    "src/train_pix2pix_v11.py": "1bd662dc9faedcb7f9010317c16b7e4da1071751632b0369e9baf297969cb057",
+    "src/train_pix2pix_v2.py": "70a9fe0017da395f633b2a80ac0f1e52cf63ccab8cf4c53056867d438561358e",
+    "src/train_pyramid_pix2pix.py": "47a1ca7a9179b238fd2a69380f9ac87bc432203017577a528c81421ef16fe221",
+    "scripts/run_final.py": "289fb0735b1315491d56a49ee8965fe83e52aacc461a99a9b54a02debf9b996c",
+    "scripts/run_marker_context.py": "59c4343e910d543b4044f025aada23bbca9d739a38e2e621347081242fcb0cb5",
+    "scripts/package_final.py": "67b45f0247c570bddf997843a56e8402f7e90b510a88d2786ef10588783f8ea1",
+    "scripts/train_full.py": "4cf2ff9cff65939f1fa1d28e977bde985a2bee5cf566cce690238166db37821f",
+    "scripts/infer_fm_test.py": "64f10bfd1b473f2b938d96a70f528c37fd9191e0f602119157ae1200dd60fc6b",
+    "scripts/integration_test_pipeline.py": "34d3eb0360edcdf9aefec89892698cb2ffe5e48ef5abc587b7f0bf10e1507eba",
+    "tests/test_final_ihc.py": "746a8288c0ee708cd6c939961747d98c9c064b6cc73fa4d36e7003599ff2d39c",
+    "tests/test_marker_context.py": "1d6f1b03768bee47319f85a1fb16cbf152adff53452300f432a91b78f6e6af5a"
+  },
+  "not_completed": [
+    "Full development training",
+    "Locked independent holdout evaluation",
+    "Re-evaluation of user low-score FM checkpoint (not present locally)",
+    "Official platform score"
+  ]
+}

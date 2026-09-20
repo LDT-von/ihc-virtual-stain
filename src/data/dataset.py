@@ -40,10 +40,9 @@ def build_transforms(patch_size: int, augment: bool) -> A.Compose:
                 A.HorizontalFlip(p=0.5),
                 A.VerticalFlip(p=0.5),
                 A.RandomRotate90(p=0.5),
-                A.Affine(scale=(0.9, 1.1), translate_percent=(-0.05, 0.05), rotate=(-15, 15), p=0.3),
-                A.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.1, hue=0.03, p=0.5),
-                A.GaussianBlur(blur_limit=(3, 7), p=0.2),
-                A.GaussNoise(p=0.2),
+                # Paired regression: preserve target intensities and alignment.
+                # Color/noise/blur applied to additional_targets='image' would
+                # change the ground truth. D4 transforms need no interpolation.
                 A.Normalize(mean=(0.5, 0.5, 0.5), std=(0.5, 0.5, 0.5), max_pixel_value=255.0),
                 ToTensorV2(),
             ],

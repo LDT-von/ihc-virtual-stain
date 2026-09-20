@@ -6,9 +6,12 @@ Usage:
 """
 import argparse
 import sys
-sys.path.insert(0, r"E:\aic\ihc-virtual-stain")
 import time
+import random
 from pathlib import Path
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import torch
 from torch.utils.data import DataLoader
@@ -21,7 +24,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--marker', default='HLA-DR',
                    choices=['HLA-DR', 'CD68', 'CD45RO', 'Vimentin'])
-    p.add_argument('--data-root', default=r'E:\aic\初赛数据集（包含训练集和测试集输入）')
+    p.add_argument('--data-root', required=True)
     p.add_argument('--epochs', type=int, default=30)
     p.add_argument('--batch-size', type=int, default=8)
     p.add_argument('--lr', type=float, default=5e-4)
@@ -32,8 +35,15 @@ def parse_args():
 
 def main():
     args = parse_args()
+    sys.stdout.reconfigure(encoding='utf-8')
+    if args.epochs < 1 or args.batch_size < 1 or args.lr <= 0:
+        raise ValueError('epochs, batch size and learning rate must be positive')
+    print('Legacy full-data FM training: no held-out score or best-model selection. '
+          'Use scripts/run_final.py for ROI-disjoint development.', flush=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(42)
+    random.seed(42)
+    np.random.seed(42)
 
     data_root = args.data_root
     marker = args.marker
@@ -42,17 +52,14 @@ def main():
         root=data_root, marker=marker, split="train",
         patch_size=256, augment=True,
     )
-    test_ds = DAPItoIHCDataset(
-        root=data_root, marker=marker, split="test",
-        patch_size=256, augment=False,
-    )
-
     print(f"train: {len(train_ds)} samples")
-    print(f"test: {len(test_ds)} samples")
+    if not train_ds:
+        raise ValueError('No paired training images')
+    if hasattr(train_ds.transform, 'set_random_seed'):
+        train_ds.transform.set_random_seed(42)
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
-                              num_workers=0, drop_last=True, pin_memory=True)
-    test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=0)
+                              num_workers=0, drop_last=False, pin_memory=device.type == 'cuda')
 
     model = build_model(
         in_channels=3, cond_channels=3,
@@ -97,14 +104,32 @@ def main():
     start_epoch = 0
     if args.resume_from:
         print(f"[Resume] loading model+optimizer from {resume_path}")
-        ck = torch.load(resume_path, map_location=device, weights_only=False)
+        ck = torch.load(resume_path, map_location='cpu', weights_only=False)
+        if ck['cfg']['defaults']['marker'] != marker or ck['cfg']['model'] != cfg['model']:
+            raise ValueError('Resume marker/model mismatch')
+        if 'optimizer' not in ck:
+            raise ValueError('This old weights-only checkpoint cannot resume optimizer state; use epochN.pt')
+        if 'train_args' in ck and ck['train_args'] != {'batch_size': args.batch_size, 'lr': args.lr}:
+            raise ValueError('Resume must preserve batch size and learning rate')
         model.load_state_dict(ck['model'], strict=True)
-        if 'optimizer' in ck:
-            optimizer.load_state_dict(ck['optimizer'])
+        optimizer.load_state_dict(ck['optimizer'])
         start_epoch = int(ck.get('epoch', -1)) + 1
-        global_step = start_epoch * (6296 // args.batch_size)
+        global_step = ck.get('global_step', start_epoch * len(train_loader))
+        if 'rng' in ck:
+            torch.set_rng_state(ck['rng']['torch'])
+            random.setstate(ck['rng']['python'])
+            np.random.set_state(ck['rng']['numpy'])
+            if device.type == 'cuda':
+                torch.cuda.set_rng_state_all(ck['rng']['cuda'])
+    if start_epoch >= epochs:
+        raise ValueError('Checkpoint already reached the requested total epochs')
 
     for epoch in range(start_epoch, epochs):
+        # Epoch reseeding also supports Albumentations versions with private RNGs.
+        random.seed(42+epoch)
+        np.random.seed(42+epoch)
+        if hasattr(train_ds.transform, 'set_random_seed'):
+            train_ds.transform.set_random_seed(42+epoch)
         model.train()
         t0 = time.time()
         epoch_loss, n_b = 0.0, 0
@@ -115,9 +140,9 @@ def main():
             optimizer.zero_grad(set_to_none=True)
             loss, _, _ = fm.forward_train(ihc, dapi)
             if not torch.isfinite(loss):
-                continue
+                raise FloatingPointError('Non-finite FM training loss')
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0, error_if_nonfinite=True)
             optimizer.step()
             epoch_loss += loss.item()
             n_b += 1
@@ -135,14 +160,19 @@ def main():
         with open(log_path, "a", encoding="utf-8") as f:
             f.write(msg + "\n")
 
-        if (epoch + 1) % 5 == 0 or epoch == epochs - 1:
-            ckpt = {
+        ckpt = {
                 "epoch": epoch, "model": model.state_dict(),
                 "optimizer": optimizer.state_dict(), "cfg": cfg,
-            }
+                "global_step": global_step,
+                "train_args": {'batch_size': args.batch_size, 'lr': args.lr},
+                "rng": {'torch': torch.get_rng_state(), 'python': random.getstate(),
+                        'numpy': np.random.get_state(),
+                        'cuda': torch.cuda.get_rng_state_all() if device.type == 'cuda' else []},
+        }
+        torch.save(ckpt, out_dir / 'latest.tmp')
+        (out_dir / 'latest.tmp').replace(out_dir / 'latest.pt')
+        if (epoch + 1) % 5 == 0 or epoch == epochs - 1:
             torch.save(ckpt, out_dir / f"epoch{epoch}.pt")
-            torch.save({"epoch": epoch, "model": model.state_dict(), "cfg": cfg},
-                       out_dir / "latest.pt")
             print(f"  [Saved] {out_dir / f'epoch{epoch}.pt'}")
 
     final = {"epoch": epochs - 1, "model": model.state_dict(), "cfg": cfg}

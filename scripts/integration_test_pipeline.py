@@ -148,21 +148,21 @@ def main() -> int:
 
         def validation_cli():
             result = run_cli('src.inference', '--ckpt', checkpoint, '--split', 'val',
-                             '--output_dir', fixture / 'val_outputs', '--save_images')
+                             '--output-dir', fixture / 'val_outputs', '--num-workers', '0')
             if result.returncode:
                 raise RuntimeError(result.stderr.strip().splitlines()[-1])
-            paths = list((fixture / 'val_outputs' / 'images').glob('*.png'))
+            paths = list((fixture / 'val_outputs' / 'val' / args.marker).glob('*_fake.jpg'))
             assert len(paths) == 1, f'Expected one output; got {len(paths)}'
             with Image.open(paths[0]) as image:
                 assert image.size == (256, 256), f'Wrong output size: {image.size}'
-            assert 'n=1' in result.stdout, 'Validation count was not one'
+            assert '1/1' in result.stdout and 'val SSIM=' in result.stdout, 'Missing count/validation metrics'
             return 'CLI reload -> image generation -> 256x256 output -> metrics against real target'
 
         check('validation_inference_cli', validation_cli)
 
         def unlabelled_cli():
             result = run_cli('src.inference', '--ckpt', checkpoint, '--split', 'test',
-                             '--output_dir', fixture / 'test_outputs', '--save_images')
+                             '--output-dir', fixture / 'test_outputs', '--num-workers', '0')
             if result.returncode:
                 raise RuntimeError(result.stderr.strip().splitlines()[-1])
             assert 'SSIM=' not in result.stdout and 'PSNR=' not in result.stdout, (
@@ -175,16 +175,15 @@ def main() -> int:
             # Run packaging from the real repo so src/ and configs/ really exist.
             archive = fixture / 'submission.zip'
             result = original_cli('src.submit', '--ckpt', checkpoint, '--marker', args.marker,
-                                  '--output_dir', fixture / 'val_outputs', '--out_zip', archive)
+                                  '--results-dir', fixture / 'test_outputs', '--out-zip', archive,
+                                  '--stage', 'preliminary')
             if result.returncode:
                 raise RuntimeError(result.stderr.strip().splitlines()[-1])
             with zipfile.ZipFile(archive) as zf:
                 names = zf.namelist()
-            assert any(n.startswith('src/') and n.endswith('.py') for n in names), 'Archive missing source code'
-            assert any(n.startswith('configs/') and n.endswith('.yaml') for n in names), 'Archive missing configuration'
-            assert any(n.endswith('.pt') for n in names), 'Archive missing model checkpoint'
-            assert any(n.endswith('.png') for n in names), 'Archive missing predictions'
-            return 'Submission archive contains images, source, configuration, and checkpoint'
+            expected = [f'results/test/{args.marker}/{second.stem}_fake.jpg']
+            assert names == expected, f'Unexpected preliminary archive contents: {names}'
+            return 'Preliminary archive contains exactly the expected official JPEG path'
 
         check('submission_archive_contract', submission_cli)
 

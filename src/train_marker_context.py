@@ -22,6 +22,18 @@ from torch.utils.data import DataLoader
 from .data.roi_manifest import (MARKERS, PairedMarkers, build_manifest, digest,
                                 read_gray, roi_id, selected_names, validate_manifest)
 from .models.marker_context import MarkerContextNet, local_ssim, reconstruction_loss
+from .models.marker_specific import MarkerSpecificNet
+from .models.anchored_ihc import AnchoredIHC
+
+
+def build_reconstruction_model(config):
+    config = dict(config)
+    architecture = config.pop('architecture', 'context')
+    if architecture == 'anchored':
+        return AnchoredIHC(**config)
+    if architecture not in ('context', 'marker_specific'):
+        raise ValueError(f'Unsupported architecture: {architecture}')
+    return (MarkerSpecificNet if architecture == 'marker_specific' else MarkerContextNet)(**config)
 
 
 def amp_context(device):
@@ -123,6 +135,8 @@ def environment():
     except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
         git = 'unavailable'
     sources = [Path(__file__), Path(__file__).parent/'models'/'marker_context.py',
+               Path(__file__).parent/'models'/'marker_specific.py',
+               Path(__file__).parent/'models'/'anchored_ihc.py',
                Path(__file__).parent/'data'/'roi_manifest.py']
     return {'python': sys.version, 'torch': str(torch.__version__), 'platform': platform.platform(),
             'device': torch.cuda.get_device_name() if torch.cuda.is_available() else 'cpu',
@@ -147,6 +161,10 @@ def train(args):
     device = torch.device(args.device)
     full_data = getattr(args, 'full_data', False)
     init_checkpoint = getattr(args, 'init_checkpoint', None)
+    baseline_checkpoint = getattr(args, 'baseline_checkpoint', None)
+    architecture = getattr(args, 'architecture', 'context')
+    if baseline_checkpoint and (args.resume or init_checkpoint or architecture != 'anchored'):
+        raise ValueError('--baseline-checkpoint is only for a fresh anchored run')
     if args.resume and init_checkpoint:
         raise ValueError('--resume restores a run; --init-checkpoint starts a new run. Choose one.')
     if full_data and not (init_checkpoint or args.resume):
@@ -162,6 +180,8 @@ def train(args):
     source_dir = output/'sources'
     source_dir.mkdir(exist_ok=True)
     for source in (Path(__file__), Path(__file__).parent/'models'/'marker_context.py',
+                   Path(__file__).parent/'models'/'marker_specific.py',
+                   Path(__file__).parent/'models'/'anchored_ihc.py',
                    Path(__file__).parent/'data'/'roi_manifest.py'):
         if not (source_dir/source.name).exists():
             shutil.copy2(source, source_dir/source.name)
@@ -169,13 +189,45 @@ def train(args):
                    selected_names(manifest['splits']['train'], args.train_limit, args.seed))
     val_names = [] if full_data else selected_names(manifest['splits']['val'], args.val_limit, args.seed)
     model_config = dict(width=args.width, markers=len(MARKERS), context=not args.no_context)
+    if getattr(args, 'architecture', 'context') != 'context':
+        model_config['architecture'] = args.architecture
+    baseline = None
+    baseline_provenance = None
+    if architecture == 'anchored':
+        if baseline_checkpoint:
+            baseline = torch.load(baseline_checkpoint, map_location='cpu', weights_only=False)
+            if baseline.get('format') != 1 or tuple(baseline.get('run', {}).get('markers', ())) != MARKERS:
+                raise ValueError('Baseline is not a supported audited multi-marker checkpoint; inspect its actual architecture first')
+            baseline_run = baseline['run']
+            if baseline_run['model_config'].get('architecture', 'context') not in ('context', 'marker_specific'):
+                raise ValueError('Recursive residual baselines are not supported')
+            if baseline_run['split_sha256'] != manifest['sha256']:
+                raise ValueError('Baseline/split mismatch: use its original complete ROI manifest or train a clean baseline')
+            if not baseline_run['train_names'] or set(baseline_run['train_names'])-set(manifest['splits']['train']):
+                raise ValueError('Baseline already saw validation/holdout samples')
+            model_config['baseline_config'] = baseline_run['model_config']
+            model_config['residual_limit'] = getattr(args, 'residual_limit', .2)
+            baseline_provenance = {'sha256': hashlib.sha256(Path(baseline_checkpoint).read_bytes()).hexdigest(),
+                                   'run': baseline_run}
+        elif args.resume or init_checkpoint:
+            parent = torch.load(args.resume or init_checkpoint, map_location='cpu', weights_only=False)
+            parent_config = parent['run']['model_config']
+            if parent_config.get('architecture') != 'anchored':
+                raise ValueError('Expected an anchored checkpoint for resume/refit')
+            model_config['baseline_config'] = parent_config['baseline_config']
+            model_config['residual_limit'] = parent_config['residual_limit']
+            baseline_provenance = parent['run']['baseline_provenance']
+        else:
+            raise ValueError('Anchored training requires --baseline-checkpoint, --resume or --init-checkpoint')
     protocol = 'all-data refit; NO held-out metric' if full_data else 'ROI disjoint development'
     print(f'Loading train={len(train_names)} val={len(val_names)}; {protocol}', flush=True)
     train_loader = make_loader(args.data_root, train_names, args.batch_size, True, not args.no_cache)
     val_loader = make_loader(args.data_root, val_names, args.batch_size, cache=not args.no_cache) if val_names else None
-    model = MarkerContextNet(**model_config).to(device)
+    model = build_reconstruction_model(model_config).to(device)
+    if baseline is not None:
+        model.baseline.load_state_dict(baseline['ema'], strict=True)
     ema = copy.deepcopy(model).eval().requires_grad_(False)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
+    optimizer = torch.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=args.lr, weight_decay=1e-4)
     scaler = torch.amp.GradScaler('cuda', enabled=device.type == 'cuda' and not torch.cuda.is_bf16_supported())
     start, steps, best = 0, 0, -math.inf
     run = {'args': vars(args), 'model_config': model_config, 'markers': list(MARKERS),
@@ -184,6 +236,11 @@ def train(args):
            'protocol': protocol,
            'selection': 'fixed final epoch; no validation' if full_data else
                         'maximum validation mean SSIM; PSNR reported separately; not an official composite score'}
+    if baseline_provenance is not None:
+        run['baseline_provenance'] = baseline_provenance
+        run['optimizer_train_names'] = train_names
+        run['train_names'] = sorted(set(train_names) | set(baseline_provenance['run']['train_names']))
+        run['trainable_parameters'] = sum(p.numel() for p in model.parameters() if p.requires_grad)
     if init_checkpoint:
         initial = torch.load(init_checkpoint, map_location='cpu', weights_only=False)
         if initial['run']['model_config'] != model_config or initial['run']['split_sha256'] != manifest['sha256']:
@@ -201,8 +258,8 @@ def train(args):
             if ckpt['run'][key] != run[key]:
                 raise ValueError(f'Resume mismatch: {key}')
         # Epoch count controls the cosine schedule; extend by a separate fine-tuning run.
-        for key in ('epochs', 'lr', 'batch_size', 'seed'):
-            if ckpt['run']['args'][key] != getattr(args, key):
+        for key in ('epochs', 'lr', 'batch_size', 'seed', 'val_jpeg_quality'):
+            if ckpt['run']['args'].get(key, 0) != getattr(args, key, 0):
                 raise ValueError(f'Resume must preserve {key}')
         if ckpt['run']['environment']['source_sha256'] != run['environment']['source_sha256']:
             raise ValueError('Training source changed; use --init-checkpoint for an explicit new experiment')
@@ -254,12 +311,13 @@ def train(args):
             decay = min(.995, (1+steps)/(10+steps))
             with torch.no_grad():
                 for e, p in zip(ema.parameters(), model.parameters()):
-                    e.lerp_(p, 1-decay)
+                    if p.requires_grad:
+                        e.lerp_(p, 1-decay)
             total += loss.item()*len(x)
             count += len(x)
             if (batch_index+1) % 100 == 0:
                 print(f'epoch={epoch+1} batch={batch_index+1}/{len(train_loader)} loss={total/count:.5f}', flush=True)
-        metrics = evaluate(ema, val_loader, device) if val_loader is not None else None
+        metrics = evaluate(ema, val_loader, device, jpeg_quality=getattr(args, 'val_jpeg_quality', 0)) if val_loader is not None else None
         improved = metrics is not None and metrics['ssim'] > best
         if metrics is not None:
             best = max(best, metrics['ssim'])
@@ -292,7 +350,7 @@ def load_model(path, device):
     checkpoint = torch.load(path, map_location='cpu', weights_only=False)
     if checkpoint.get('format') != 1 or tuple(checkpoint['run']['markers']) != MARKERS:
         raise ValueError('Unsupported checkpoint/marker order')
-    model = MarkerContextNet(**checkpoint['run']['model_config']).to(device)
+    model = build_reconstruction_model(checkpoint['run']['model_config']).to(device)
     model.load_state_dict(checkpoint['ema'], strict=True)
     return model.eval(), checkpoint
 
@@ -302,6 +360,10 @@ def eval_command(args):
     manifest = load_manifest(args.manifest, args.data_root)
     device = torch.device(args.device)
     model, checkpoint = load_model(args.checkpoint, device)
+    if getattr(args, 'deployment', None):
+        from .select_ultimate import apply_deployment
+        apply_deployment(model, checkpoint, args.checkpoint, args.deployment, args.tta,
+                         args.jpeg_quality, getattr(args, 'allow_smoke', False))
     if checkpoint['run']['split_sha256'] != manifest['sha256']:
         raise ValueError('Checkpoint/split mismatch')
     names = selected_names(manifest['splits'][args.split], args.limit, args.seed)
@@ -318,11 +380,20 @@ def eval_command(args):
 
 
 def infer_command(args):
+    if args.batch_size < 1:
+        raise ValueError('Batch size must be positive')
     if not 1 <= args.jpeg_quality <= 100:
         raise ValueError('JPEG quality must be 1..100')
     seed_all(args.seed)
     device = torch.device(args.device)
     model, checkpoint = load_model(args.checkpoint, device)
+    deployment = None
+    if isinstance(model, AnchoredIHC):
+        if not getattr(args, 'deployment', None):
+            raise ValueError('Anchored submission inference requires a locked --deployment manifest')
+        from .select_ultimate import apply_deployment
+        deployment = apply_deployment(model, checkpoint, args.checkpoint, args.deployment,
+                                      args.tta, args.jpeg_quality, getattr(args, 'allow_smoke', False))
     inputs = sorted(Path(args.input).glob('*.jpg'))
     if not inputs:
         raise ValueError('No input JPEGs')
@@ -346,6 +417,7 @@ def infer_command(args):
         if offset % (args.batch_size*50) == 0:
             print(f'Inferred {min(offset+len(files), len(inputs))}/{len(inputs)}', flush=True)
     write_json(output/'provenance.json', {'input_count': len(inputs), 'markers': list(MARKERS),
+               'deployment_sha256': deployment['sha256'] if deployment else None,
                'tta': args.tta, 'jpeg_quality': args.jpeg_quality, 'run': checkpoint['run'],
                'checkpoint_sha256': hashlib.sha256(Path(args.checkpoint).read_bytes()).hexdigest(),
                'input_names_sha256': digest([p.name for p in inputs])})
@@ -372,6 +444,10 @@ def main():
             p.add_argument('--data-root', required=True)
             p.add_argument('--manifest', required=True)
         if name == 'train':
+            p.add_argument('--architecture', choices=('context', 'marker_specific', 'anchored'), default='context')
+            p.add_argument('--baseline-checkpoint', help='Initialize a frozen audited baseline for residual refinement')
+            p.add_argument('--residual-limit', type=float, default=.2)
+            p.add_argument('--val-jpeg-quality', type=int, choices=range(0, 101), default=95)
             p.add_argument('--width', type=int, default=16)
             p.add_argument('--epochs', type=int, default=20)
             p.add_argument('--lr', type=float, default=5e-4)
@@ -383,6 +459,8 @@ def main():
             p.add_argument('--init-checkpoint', help='Initialize EMA weights only; start a fresh optimizer/schedule')
             p.add_argument('--full-data', action='store_true', help='Refit all labeled ROIs after locking choices; disables validation')
         else:
+            p.add_argument('--deployment', help='Locked validation marker-selection manifest')
+            p.add_argument('--allow-smoke', action='store_true', help='Pipeline fixtures only; not for competition')
             p.add_argument('--checkpoint', required=True)
             p.add_argument('--tta', type=int, choices=(1, 4, 8), default=1)
             p.add_argument('--jpeg-quality', type=int, default=95)

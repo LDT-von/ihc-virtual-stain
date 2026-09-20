@@ -1,12 +1,9 @@
 """Flow Matching 训练与采样
 
-核心思路：
-- 训练：学习速度场 v_θ(x_t, t | x_0, x_dapi)
-- 采样：从纯噪声 x_1 出发，通过 ODE 求解器逐步去噪至 x_0
-
-路径策略：
-- optimal_transport: 使用 OT 插值（直线最优传输），质量更好
-- independent: 独立采样各时间步的噪声（更快）
+训练路径 x_t=(1-t)x_0+t*epsilon，网络学习 cleanward 方向 x_0-epsilon。
+采样 t 从 1 降到 0，每步增加正的 cleanward 增量。
+optimal_transport 是历史配置名：当前实现只是独立噪声的直线插值，未求解 OT 耦合。
+independent 使用 sigma_min+(1-sigma_min)t，因此端点保留 sigma_min 噪声。
 """
 from dataclasses import dataclass
 from typing import Literal, Optional
@@ -35,10 +32,14 @@ class FlowMatching(nn.Module):
     采样：Euler / Heun ODE 求解
     """
 
-    def __init__(self, model: nn.Module, config: FlowMatchingConfig):
+    def __init__(self, model: nn.Module, config: FlowMatchingConfig | None = None):
         super().__init__()
         self.model = model
-        self.cfg = config
+        self.cfg = config or FlowMatchingConfig()
+        if self.cfg.method not in ('optimal_transport', 'independent'):
+            raise ValueError('Unknown flow path')
+        if not 0 <= self.cfg.sigma_min < 1:
+            raise ValueError('sigma_min must be in [0,1)')
 
     def forward_train(
         self, x0: torch.Tensor, dapi: torch.Tensor
@@ -100,23 +101,36 @@ class FlowMatching(nn.Module):
         Returns:
             x0_pred:  生成的 IHC 图像 (B, C, H, W)
         """
-        num_steps = num_steps or self.cfg.num_sampling_steps
-        solver = solver or self.cfg.solver
+        num_steps = self.cfg.num_sampling_steps if num_steps is None else num_steps
+        solver = self.cfg.solver if solver is None else solver
+        if not isinstance(num_steps, int) or isinstance(num_steps, bool) or num_steps < 1:
+            raise ValueError('num_steps must be a positive integer')
+        if solver not in ('euler', 'heun'):
+            raise ValueError('solver must be euler or heun')
+        if self.cfg.method not in ('optimal_transport', 'independent'):
+            raise ValueError('Unknown flow path')
+        if not 0 <= self.cfg.sigma_min < 1:
+            raise ValueError('sigma_min must be in [0,1)')
 
         B, C, H, W = dapi.shape
         device = dapi.device
 
         # 初始状态：纯噪声 x_1 ~ N(0, 1)
         if x_init is not None:
-            x = x_init
+            if x_init.shape != dapi.shape or x_init.device != device:
+                raise ValueError('Initial noise must match the condition shape/device')
+            x = x_init.clone()
         else:
-            x = torch.randn(B, C, H, W, device=device)
+            x = torch.randn_like(dapi)
 
-        dt = 1.0 / num_steps
+        path_scale = 1.0 if self.cfg.method == 'optimal_transport' else 1.0-self.cfg.sigma_min
+        dt = path_scale / num_steps
 
         # 训练时: x_t = (1 - t) * x_0 + t * ε, v_target = x_0 - ε
         # 采样: 从 t=1 (噪声) 反向 ODE 积分到 t=0 (x_0)
-        #       dx/dt = v_target = x_0 - ε  =>  x_{t-dt} = x_t - dt * v(x_t, t)
+        # dx/dt = epsilon-x0 = -v_target. Integrating over decreasing t
+        # therefore ADDS the learned cleanward velocity. Preserve the training
+        # target so existing checkpoints can be re-evaluated without retraining.
         if solver == "heun":
             # Heun's method（二阶 Runge-Kutta）
             for i in range(num_steps):
@@ -125,13 +139,13 @@ class FlowMatching(nn.Module):
 
                 # Euler 预测
                 v1 = self.model(x, t_now_t, dapi)
-                x_mid = x - dt * v1
+                x_mid = x + dt * v1
 
                 # Heun 修正
                 t_next = 1.0 - (i + 1) / num_steps    # (N-1)/N → 0
                 t_next_t = torch.full((B,), t_next, device=device, dtype=x.dtype)
                 v2 = self.model(x_mid, t_next_t, dapi)
-                x = x - dt * 0.5 * (v1 + v2)
+                x = x + dt * 0.5 * (v1 + v2)
 
         else:
             # Euler：从噪声反向积分到 x_0
@@ -139,7 +153,7 @@ class FlowMatching(nn.Module):
                 t_now = 1.0 - i / num_steps           # 1.0 → 1/N
                 t_now_t = torch.full((B,), t_now, device=device, dtype=x.dtype)
                 v = self.model(x, t_now_t, dapi)
-                x = x - dt * v
+                x = x + dt * v
 
         return x
 

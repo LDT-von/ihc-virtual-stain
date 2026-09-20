@@ -8,24 +8,28 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def main():
+def main(final=False):
+    sys.stdout.reconfigure(encoding='utf-8')
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--data-root', type=Path, required=True, help='Directory directly containing train/DAPI and test/DAPI')
     p.add_argument('--mode', choices=('smoke', 'train', 'ablation', 'refit', 'predict'), default='train')
-    p.add_argument('--run-dir', type=Path, default=ROOT/'checkpoints'/'mcn_server_v1')
+    p.add_argument('--run-dir', type=Path, default=ROOT/'checkpoints'/('ihc_final_v1' if final else 'mcn_server_v1'))
     p.add_argument('--manifest', type=Path, default=ROOT/'configs'/'roi_split_v1.json')
-    p.add_argument('--width', type=int, default=32)
-    p.add_argument('--epochs', type=int, default=60)
-    p.add_argument('--batch-size', type=int, default=8)
-    p.add_argument('--lr', type=float, default=5e-4)
+    p.add_argument('--width', type=int, default=24 if final else 32)
+    p.add_argument('--architecture', choices=('context', 'marker_specific'), default='marker_specific' if final else 'context')
+    p.add_argument('--epochs', type=int, help='Default: 60 for train; 5 for refit')
+    p.add_argument('--batch-size', type=int, default=2 if final else 8)
+    p.add_argument('--lr', type=float, help='Default: 0.0005 for train; 0.0001 for refit')
     p.add_argument('--seed', type=int, default=42)
     p.add_argument('--checkpoint', type=Path)
     p.add_argument('--resume', type=Path)
     p.add_argument('--tta', type=int, choices=(1, 4, 8), default=4)
     p.add_argument('--no-cache', action='store_true', help='For machines with limited host RAM')
     args = p.parse_args()
+    args.epochs = args.epochs if args.epochs is not None else (5 if args.mode == 'refit' else 60)
+    args.lr = args.lr if args.lr is not None else (1e-4 if args.mode == 'refit' else 5e-4)
     args.data_root, args.run_dir, args.manifest = args.data_root.resolve(), args.run_dir.resolve(), args.manifest.resolve()
-    if not (args.data_root/'train'/'DAPI').is_dir():
+    if args.mode != 'predict' and not (args.data_root/'train'/'DAPI').is_dir():
         p.error('--data-root must directly contain train/DAPI')
     if args.checkpoint:
         args.checkpoint = args.checkpoint.resolve()
@@ -40,6 +44,11 @@ def main():
     if args.mode == 'predict':
         if args.checkpoint is None:
             p.error('predict requires --checkpoint')
+        if final:
+            import torch
+            ck = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
+            if ck['run']['args'].get('train_limit') or ck['run']['args'].get('val_limit'):
+                p.error('Smoke/subset checkpoint cannot be used for final submission')
         run('infer', '--input', args.data_root/'test'/'DAPI', '--checkpoint', args.checkpoint,
             '--output', args.run_dir, '--tta', args.tta, '--batch-size', args.batch_size)
         return
@@ -47,14 +56,16 @@ def main():
         run('split', '--data-root', args.data_root, '--output', args.manifest, '--seed', args.seed)
     options = ['--data-root', args.data_root, '--manifest', args.manifest,
                '--output', args.run_dir, '--batch-size', args.batch_size, '--seed', args.seed,
-               '--width', args.width, '--lr', args.lr, '--epochs', args.epochs]
+               '--width', args.width, '--lr', args.lr, '--epochs', args.epochs,
+               '--architecture', args.architecture, '--val-jpeg-quality', '95']
     if args.no_cache:
         options += ['--no-cache']
     if args.resume:
         options += ['--resume', args.resume]
     if args.mode == 'smoke':
         options = ['--data-root', args.data_root, '--manifest', args.manifest, '--output', args.run_dir,
-                   '--width', '8', '--epochs', '2', '--batch-size', '2', '--train-limit', '32', '--val-limit', '8']
+                   '--width', '8', '--epochs', '2', '--batch-size', '2', '--train-limit', '32', '--val-limit', '8',
+                   '--architecture', args.architecture, '--val-jpeg-quality', '95']
     elif args.mode == 'ablation':
         options += ['--no-context']
     elif args.mode == 'refit':
@@ -62,6 +73,11 @@ def main():
             p.error('refit requires --checkpoint (validated best.pt) or --resume')
         options += ['--full-data']
         if args.checkpoint:
+            if final:
+                import torch
+                ck = torch.load(args.checkpoint, map_location='cpu', weights_only=False)
+                if ck['run']['args'].get('train_limit') or ck['run']['args'].get('val_limit'):
+                    p.error('Refit requires a complete development run, not a smoke/subset run')
             options += ['--init-checkpoint', args.checkpoint]
     run('train', *options)
     if args.mode == 'smoke':
