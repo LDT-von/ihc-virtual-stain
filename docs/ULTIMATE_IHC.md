@@ -4,7 +4,7 @@
 
 ## 目前交付到哪里
 
-方法、训练、续训、验证选模、锁定后独立检查、推理和提交打包均已实现。23 项回归测试通过，真实数据两阶段小规模流程及恢复通过。**尚未取得 5090 上的历史高分权重，也没有完成新模型完整训练；当前不是已验证超过 67.9114 的成品权重。**
+方法、训练、续训、验证选模、锁定后独立检查、推理和提交打包均已实现。复赛版强制 seed=2026，并将固定验证选择写入唯一的 `final.pt`。**seed=42 的旧检查及旧权重均为历史证据，不符合复赛统一种子要求；尚未完成复赛版完整训练，当前不是已验证超过 67.9114 的成品权重。**
 
 代码以远程分支 `cursor/fix-flow-matching-reverse-ode-and-add-stable-diffusion` 的 `6e60f0194d5dda9c19a96eb0d3acaa8f22425f6d` 为基础，独立工作分支为 `codex/final-ihc`。交付包附逐文件 SHA256；基础提交号不代表这些新增修改已推送。
 
@@ -51,13 +51,14 @@ python scripts/inspect_checkpoint.py /data1/AIC/checkpoints/mcn_v1 /data1/AIC/ch
 
 ## 验证和部署规则
 
-默认固定 ROI 划分 train=4813、val=677、holdout=806；划分哈希为 `aeabdc68c8c6d2993aeb22a1368404a36ad49f80f421c02415a3d1c39e9efbff`。ROI 隔离不等于患者隔离，目前没有患者映射。
+复赛固定随机种子为 2026。默认固定 ROI 划分文件是 `configs/roi_split_semifinal_2026.json`：train=4711、val=782、holdout=803；划分哈希为 `02aff2b61f62da71c0fa65a5748f90761f23f7e1d245b5530531d306796f04d6`。三个集合的 ROI 完全互斥；ROI 隔离不等于患者隔离，目前没有患者映射。
 
-1. 基准和精修只使用 train 标签训练；每轮用 val 的 JPEG quality=95 输出按平均 SSIM 选 best，PSNR 同时记录。
-2. 完成精修后，在完整 val 上用预先固定的 TTA=4、同一 JPEG 编码，分别评估冻结基准与精修结果。
-3. 每个 marker 只有 SSIM 严格提高且 PSNR 不下降才启用精修；平局也保留基准。生成绑定权重哈希、划分、TTA、JPEG 质量的 `deployment.json`。
+1. 基准和精修只使用 train 标签训练；每轮按固定 JPEG 序列化后的 val 平均 SSIM 选 best，PSNR 同时记录。序列化固定为灰度 JPEG、quality=100、subsampling=0、optimize=false，不提供可调压缩参数。
+2. 完成精修后，在完整 val 上用预先固定的 TTA=4 和同一固定序列化，分别评估冻结基准与精修结果。
+3. 每个 marker 只有 SSIM 严格提高且 PSNR 不下降才启用精修；平局保留基准。该固定选择写入组合模型状态，并导出唯一的 `final.pt`；`deployment.json` 只作为验证审计记录，不参与测试推理。
 4. 锁定后在 holdout 上一次性比较原基准与部署模型，输出逐图、逐 ROI、逐 marker 的结果及差值。**holdout 不再调整分支选择，也不承诺不下降。** 报告若下降，应如实作为独立验收失败记录，不围绕它继续搜索再声称独立。
-5. 推理必须使用同一权重和部署配置；改变权重、TTA、JPEG 质量会被拒绝。正式打包入口要求已有匹配的独立检查报告，拒绝小规模流程测试模型。
+5. 推理只允许读取 `final.pt`，从 checkpoint 取得 seed、TTA 和固定 marker mask；模型保持 eval/no-grad，不更新参数或统计量。正式打包入口要求已有匹配的独立检查报告，拒绝训练 checkpoint 和小规模流程测试模型。
+6. TTA 只包含固定旋转/翻转，每个预测精确逆变换后等权平均。平均结果直接转为官方灰度 uint8 JPEG；没有阈值、形态学、去噪、平滑、锐化、Gamma/亮度/对比度、直方图匹配或 CLAHE。
 
 这一规则只保证用于选择的本地 val 指标按该协议不退步。它不保证独立数据或平台提分；与历史 67.9114 的比较还需要同一权重身份及平台评测对应关系。完整训练最少归档基准、精修、部署三行本地指标，再归档平台提交 ID 与实际分数。
 
@@ -98,10 +99,10 @@ python scripts/run_final.py --data-root /data1/AIC/data --run-dir checkpoints/ul
 
 ## 产物和已执行检查
 
-每个 run 包含 `recipe.json`、两个阶段的配置/划分/源码快照/完整 last.pt/EMA best.pt/逐轮指标，以及 `deployment.json` 和一次性的 `holdout_locked.json`。预测目录有 `provenance.json`，ZIP 只包含 `results/test/<marker>/<原文件名>_fake.jpg`。1346 个测试输入对应四 marker 共 5384 张 JPEG。
+每个 run 包含 `recipe.json`、两个阶段的配置/划分/源码快照/完整 last.pt/EMA best.pt/逐轮指标、验证审计用 `deployment.json`、唯一测试模型 `final.pt` 和一次性的 `holdout_locked.json`。测试入口只读取 `final.pt`。预测目录有 `provenance.json`，ZIP 只包含 `results/test/<marker>/<原文件名>_fake.jpg`。1346 个测试输入对应四 marker 共 5384 张 JPEG。
 
-- 23 项回归：初始恒等映射、冻结基准、私有分支梯度、修正幅度、指标选择、拒绝泄漏、源码/权重/推理参数绑定、训练/恢复/独立检查/推理、公开入口完整打包，以及此前 FM、SSIM、TTA 和打包检查。
-- 真实数据 smoke：32 训练、8 验证，基准 2 轮＋精修 2 轮；两个阶段均完成 32 个优化步，零溢出。未检测到精修收益，四个标记全部回退基准。它只证明流程可执行。
+- 24 项回归检查通过，覆盖：强制 seed=2026、单 final checkpoint、冻结推理、TTA 精确逆变换与等权平均、无预测后处理、初始恒等映射、冻结基准、私有分支梯度、修正幅度、指标选择、拒绝泄漏、训练/恢复/独立检查/推理和完整打包。
+- seed=2026 真实数据 smoke 已完成：32 个 Train、8 个 Val，基准和精修各 2 轮、各 32 次优化更新，零溢出；它只证明复赛流程可执行，不是性能证据，不能提交。
 - 默认宽度 GPU 检查：RTX 3060 Laptop，真实图像 batch=4，三次 AdamW 更新，梯度有限，峰值已分配显存约 3894 MiB；不等于 5090 吞吐或完整训练时间。
 - 目前缺少：服务器历史权重/归档复核、完整训练、锁定后的正式独立检查、平台成绩。不能把以上结构检查或小规模指标当作这些结果。
 

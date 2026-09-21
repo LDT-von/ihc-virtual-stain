@@ -15,7 +15,7 @@ from src.metrics.ssim_psnr import MetricAggregator
 
 def main():
     device = torch.device("cuda")
-    torch.manual_seed(42)
+    torch.manual_seed(2026)
     
     data_root = r"E:\aic\ihc-data3"
     marker = "HLA-DR"

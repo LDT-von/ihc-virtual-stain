@@ -12,6 +12,7 @@ from PIL import Image
 from torch.utils.data import Dataset
 
 MARKERS = ('HLA-DR', 'CD68', 'CD45RO', 'Vimentin')
+SEMIFINAL_SEED = 2026
 
 
 def roi_id(name):
@@ -28,6 +29,8 @@ def digest(value):
 def validate_manifest(manifest):
     if manifest.get('format') != 1 or tuple(manifest.get('markers', ())) != MARKERS:
         raise ValueError('Unsupported manifest / marker order')
+    if manifest.get('seed') != SEMIFINAL_SEED:
+        raise ValueError(f'Semifinal manifest must use seed={SEMIFINAL_SEED}')
     if manifest.get('sha256') != digest({k: v for k, v in manifest.items() if k != 'sha256'}):
         raise ValueError('Manifest checksum mismatch')
     seen_names, seen_rois = set(), set()
@@ -44,7 +47,9 @@ def validate_manifest(manifest):
         raise ValueError('Split union does not match the complete dataset inventory')
 
 
-def build_manifest(root, destination, seed=42, val_rois=3, holdout_rois=3):
+def build_manifest(root, destination, seed=SEMIFINAL_SEED, val_rois=3, holdout_rois=3):
+    if seed != SEMIFINAL_SEED:
+        raise ValueError(f'Semifinal protocol requires seed={SEMIFINAL_SEED}')
     root, destination = Path(root), Path(destination)
     if destination.exists():
         raise FileExistsError(f'Will not overwrite split: {destination}')

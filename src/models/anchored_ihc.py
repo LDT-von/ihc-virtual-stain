@@ -22,8 +22,18 @@ class AnchoredIHC(nn.Module):
             nn.init.zeros_(decoder.head.weight)
             nn.init.zeros_(decoder.head.bias)
         self.residual_limit = float(residual_limit)
-        # Runtime model-selection decision; training always optimizes all branches.
-        self.deployment_mask = None
+        # Persist the fixed validation decision inside the one final checkpoint.
+        self.register_buffer('deployment_mask', torch.zeros(markers, dtype=torch.bool))
+        self.register_buffer('deployment_locked', torch.tensor(False, dtype=torch.bool))
+
+    def lock_deployment(self, mask):
+        if self.deployment_locked.item():
+            raise ValueError('Deployment is already locked')
+        if len(mask) != self.deployment_mask.numel() or any(type(value) is not bool for value in mask):
+            raise ValueError('Invalid deployment marker mask')
+        self.deployment_mask.copy_(torch.tensor(mask, dtype=torch.bool, device=self.deployment_mask.device))
+        self.deployment_locked.fill_(True)
+        return self
 
     def train(self, mode=True):
         super().train(mode)
@@ -33,11 +43,11 @@ class AnchoredIHC(nn.Module):
     def forward(self, dapi):
         with torch.no_grad():
             base = self.baseline(dapi).float()
-        if self.deployment_mask is not None and not any(self.deployment_mask):
+        if self.deployment_locked.item() and not self.deployment_mask.any().item():
             return base
         logits = self.refiner(torch.cat((dapi, base.to(dapi.dtype)), dim=1)).float()
         candidate = (base + self.residual_limit*logits.tanh()).clamp(0, 1)
-        if self.deployment_mask is None:
+        if not self.deployment_locked.item():
             return candidate
-        mask = torch.tensor(self.deployment_mask, dtype=torch.bool, device=dapi.device).view(1, -1, 1, 1)
+        mask = self.deployment_mask.view(1, -1, 1, 1)
         return torch.where(mask, candidate, base)

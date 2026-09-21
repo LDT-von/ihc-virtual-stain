@@ -41,9 +41,10 @@ def main():
     print('Legacy full-data FM training: no held-out score or best-model selection. '
           'Use scripts/run_final.py for ROI-disjoint development.', flush=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    torch.manual_seed(42)
-    random.seed(42)
-    np.random.seed(42)
+    torch.manual_seed(2026)
+    torch.cuda.manual_seed_all(2026)
+    random.seed(2026)
+    np.random.seed(2026)
 
     data_root = args.data_root
     marker = args.marker
@@ -56,7 +57,7 @@ def main():
     if not train_ds:
         raise ValueError('No paired training images')
     if hasattr(train_ds.transform, 'set_random_seed'):
-        train_ds.transform.set_random_seed(42)
+        train_ds.transform.set_random_seed(2026)
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True,
                               num_workers=0, drop_last=False, pin_memory=device.type == 'cuda')
@@ -77,7 +78,7 @@ def main():
         "flow_matching": {"sigma_min": 1e-5, "method": "optimal_transport",
                           "num_sampling_steps": 50, "solver": "euler"},
         "data": {"patch_size": 256, "root": data_root},
-        "defaults": {"marker": marker},
+        "defaults": {"marker": marker, "seed": 2026},
     }
 
     fm = FlowMatching(model, FlowMatchingConfig(

@@ -38,7 +38,7 @@
 无需重训即可检验采样修复：
 
 ```bash
-python scripts/infer_fm_test.py --data-root "DATA_ROOT" --ckpt "YOUR_FM_CHECKPOINT.pt" --marker CD68 --output-dir predictions/fm_fixed --num-steps 50 --solver heun --seed 42
+python scripts/infer_fm_test.py --data-root "DATA_ROOT" --ckpt "YOUR_FM_CHECKPOINT.pt" --marker CD68 --output-dir predictions/fm_fixed --num-steps 50 --solver heun --seed 2026
 python scripts/package_final.py --input "DATA_ROOT/test/DAPI" --prediction-dir predictions/fm_fixed --output submissions/fm_fixed_CD68.zip --markers CD68
 ```
 

@@ -9,6 +9,7 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+from src.data.roi_manifest import SEMIFINAL_SEED
 
 
 def main():
@@ -16,7 +17,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--data-root', type=Path, required=True)
     p.add_argument('--run-dir', type=Path, required=True)
-    p.add_argument('--manifest', type=Path, default=ROOT/'configs/roi_split_v1.json')
+    p.add_argument('--manifest', type=Path, default=ROOT/'configs/roi_split_semifinal_2026.json')
     p.add_argument('--mode', choices=('train', 'smoke', 'evaluate', 'predict'), default='train')
     p.add_argument('--baseline-checkpoint', type=Path, help='Verified multi-marker baseline on this exact manifest')
     p.add_argument('--baseline-epochs', type=int, default=60)
@@ -26,7 +27,7 @@ def main():
     p.add_argument('--batch-size', type=int, default=4)
     p.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     p.add_argument('--tta', choices=(1,4,8), type=int, default=4)
-    p.add_argument('--seed', type=int, default=42)
+    p.add_argument('--seed', type=int, choices=(SEMIFINAL_SEED,), default=SEMIFINAL_SEED)
     p.add_argument('--no-cache', action='store_true')
     p.add_argument('--resume', action='store_true', help='Resume the unchanged staged recipe')
     p.add_argument('--output', type=Path, help='Required for predict; new output directory')
@@ -41,7 +42,7 @@ def main():
     if args.mode == 'evaluate':
         options = ['--no-cache'] if args.no_cache else []
         run('src.evaluate_ultimate', '--data-root', args.data_root, '--manifest', args.manifest,
-            '--checkpoint', args.run_dir/'refiner/best.pt', '--deployment', args.run_dir/'deployment.json',
+            '--checkpoint', args.run_dir/'final.pt',
             '--output', args.run_dir/'holdout_locked.json', '--batch-size', args.batch_size,
             '--device', args.device, '--seed', args.seed, *options)
         return
@@ -49,24 +50,25 @@ def main():
     if args.mode == 'predict':
         if args.output is None:
             p.error('predict requires --output')
-        decision = json.loads((args.run_dir/'deployment.json').read_text(encoding='utf-8'))
-        if decision['smoke_only']:
-            p.error('Smoke model cannot generate a competition submission')
+        final_checkpoint = args.run_dir/'final.pt'
+        if not final_checkpoint.is_file():
+            p.error('Missing the single exported final checkpoint')
+        final = torch.load(final_checkpoint, map_location='cpu', weights_only=False)
+        decision = final.get('deployment', {})
         from src.data.roi_manifest import digest
         from src.select_ultimate import sha256
         holdout_path = args.run_dir/'holdout_locked.json'
         if not holdout_path.is_file():
             p.error('Run --mode evaluate once before packaging the locked model')
         holdout = json.loads(holdout_path.read_text(encoding='utf-8'))
-        if (holdout.get('format') != 1 or holdout.get('split') != 'holdout' or holdout.get('smoke_only')
-                or holdout.get('deployment_sha256') != decision['sha256']
-                or holdout.get('checkpoint_sha256') != sha256(args.run_dir/'refiner/best.pt')
+        if (holdout.get('format') != 1 or holdout.get('split') != 'holdout'
+                or holdout.get('selection_report_sha256') != decision.get('selection_report_sha256')
+                or holdout.get('checkpoint_sha256') != sha256(final_checkpoint)
                 or holdout.get('sha256') != digest({k:v for k,v in holdout.items() if k != 'sha256'})):
             p.error('Holdout report does not match this locked model')
         output = args.output.resolve()
         run('src.train_marker_context', 'infer', '--input', args.data_root/'test/DAPI',
-            '--checkpoint', args.run_dir/'refiner/best.pt', '--deployment', args.run_dir/'deployment.json',
-            '--tta', decision['tta'], '--jpeg-quality', decision['jpeg_quality'], '--output', output,
+            '--checkpoint', final_checkpoint, '--tta', decision['tta'], '--output', output,
             '--batch-size', args.batch_size, '--device', args.device)
         from scripts.package_final import package
         print(json.dumps(package(args.data_root/'test/DAPI', output, output/'submission.zip')), flush=True)
@@ -93,7 +95,7 @@ def main():
     args.run_dir.mkdir(parents=True, exist_ok=True)
     plan.write_text(json.dumps(recipe, indent=2), encoding='utf-8')
     common = ['--data-root', args.data_root, '--manifest', args.manifest, '--batch-size', args.batch_size,
-              '--device', args.device, '--seed', args.seed, '--val-jpeg-quality', 95]
+              '--device', args.device, '--seed', args.seed]
     if args.no_cache:
         common.append('--no-cache')
     if args.mode == 'smoke':
@@ -125,18 +127,17 @@ def main():
         marker.write_text(json.dumps(identity,indent=2),encoding='utf-8')
     candidate = stage('refiner',args.refine_epochs,'anchored',args.width,1e-4,baseline)
     selection = args.run_dir/'deployment.json'
+    final_checkpoint = args.run_dir/'final.pt'
     if not selection.exists():
-        options = ['--limit',8,'--allow-smoke'] if args.mode == 'smoke' else []
+        options = ['--limit',8,'--allow-smoke'] if args.mode == 'smoke' else ['--final-checkpoint',final_checkpoint]
         if args.no_cache:
             options.append('--no-cache')
         run('src.select_ultimate','--data-root',args.data_root,'--manifest',args.manifest,
             '--checkpoint',candidate,'--output',selection,'--tta',args.tta,'--device',args.device,
             '--batch-size',args.batch_size,*options)
     else:
-        from src.select_ultimate import apply_deployment
-        from src.train_marker_context import load_model
-        model, ck = load_model(candidate,torch.device('cpu'))
-        apply_deployment(model,ck,candidate,selection,args.tta,95,args.mode == 'smoke')
+        if args.mode != 'smoke' and not final_checkpoint.is_file():
+            raise FileNotFoundError('Locked selection exists but final.pt is missing')
     print(f'Completed development recipe. Deployment decision: {selection}. Official score unmeasured.',flush=True)
 
 

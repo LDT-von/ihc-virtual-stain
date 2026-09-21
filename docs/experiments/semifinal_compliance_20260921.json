@@ -1,0 +1,58 @@
+{
+  "date": "2026-09-21",
+  "protocol": "semifinal",
+  "status": "implementation and pipeline verified; full training and official score pending",
+  "seed": 2026,
+  "split": {
+    "file": "configs/roi_split_semifinal_2026.json",
+    "sha256": "02aff2b61f62da71c0fa65a5748f90761f23f7e1d245b5530531d306796f04d6",
+    "group_unit": "ROI",
+    "train": 4711,
+    "val": 782,
+    "holdout": 803,
+    "roi_disjoint": true
+  },
+  "final_model": {
+    "name": "IHC Ultimate v1 semifinal",
+    "test_checkpoint": "final.pt",
+    "checkpoint_count": 1,
+    "fixed_structure": true,
+    "parameters_frozen_at_test": true,
+    "test_time_adaptation": false
+  },
+  "tta": {
+    "checkpoint_count": 1,
+    "geometric_only": true,
+    "exact_inverse": true,
+    "aggregation": "equal-weight mean"
+  },
+  "output": {
+    "postprocessing": false,
+    "shape": [256, 256],
+    "channels": 1,
+    "dtype": "uint8",
+    "range": [0, 255],
+    "format": "JPEG",
+    "quality": 100,
+    "subsampling": 0,
+    "optimize": false
+  },
+  "tests": {
+    "passed": 24,
+    "failed": 0,
+    "seconds": 60.31
+  },
+  "real_data_smoke": {
+    "train_samples": 32,
+    "val_samples": 8,
+    "baseline_epochs": 2,
+    "refiner_epochs": 2,
+    "baseline_optimizer_steps": 32,
+    "refiner_optimizer_steps": 32,
+    "overflow_batches": 0,
+    "marker_mask": [false, false, false, false],
+    "purpose": "pipeline verification only; not performance evidence or a submission model"
+  },
+  "official_score": null,
+  "full_training_complete": false
+}

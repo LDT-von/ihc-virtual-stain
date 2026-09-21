@@ -354,7 +354,7 @@ def main():
                        help='输出目录')
     parser.add_argument('--resume', type=str, default='',
                        help='恢复训练的 checkpoint 路径')
-    parser.add_argument('--seed', type=int, default=42,
+    parser.add_argument('--seed', type=int, choices=(2026,), default=2026,
                        help='随机种子')
     parser.add_argument('--use-val-split', action='store_true',
                        help='使用 val 目录划分验证集')

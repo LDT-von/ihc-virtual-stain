@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from src.data.roi_manifest import SEMIFINAL_SEED
 
 
 def main(final=False):
@@ -14,13 +16,13 @@ def main(final=False):
     p.add_argument('--data-root', type=Path, required=True, help='Directory directly containing train/DAPI and test/DAPI')
     p.add_argument('--mode', choices=('smoke', 'train', 'ablation', 'refit', 'predict'), default='train')
     p.add_argument('--run-dir', type=Path, default=ROOT/'checkpoints'/('ihc_final_v1' if final else 'mcn_server_v1'))
-    p.add_argument('--manifest', type=Path, default=ROOT/'configs'/'roi_split_v1.json')
+    p.add_argument('--manifest', type=Path, default=ROOT/'configs'/'roi_split_semifinal_2026.json')
     p.add_argument('--width', type=int, default=24 if final else 32)
     p.add_argument('--architecture', choices=('context', 'marker_specific'), default='marker_specific' if final else 'context')
     p.add_argument('--epochs', type=int, help='Default: 60 for train; 5 for refit')
     p.add_argument('--batch-size', type=int, default=2 if final else 8)
     p.add_argument('--lr', type=float, help='Default: 0.0005 for train; 0.0001 for refit')
-    p.add_argument('--seed', type=int, default=42)
+    p.add_argument('--seed', type=int, choices=(SEMIFINAL_SEED,), default=SEMIFINAL_SEED)
     p.add_argument('--checkpoint', type=Path)
     p.add_argument('--resume', type=Path)
     p.add_argument('--tta', type=int, choices=(1, 4, 8), default=4)
@@ -57,7 +59,7 @@ def main(final=False):
     options = ['--data-root', args.data_root, '--manifest', args.manifest,
                '--output', args.run_dir, '--batch-size', args.batch_size, '--seed', args.seed,
                '--width', args.width, '--lr', args.lr, '--epochs', args.epochs,
-               '--architecture', args.architecture, '--val-jpeg-quality', '95']
+               '--architecture', args.architecture]
     if args.no_cache:
         options += ['--no-cache']
     if args.resume:
@@ -65,7 +67,7 @@ def main(final=False):
     if args.mode == 'smoke':
         options = ['--data-root', args.data_root, '--manifest', args.manifest, '--output', args.run_dir,
                    '--width', '8', '--epochs', '2', '--batch-size', '2', '--train-limit', '32', '--val-limit', '8',
-                   '--architecture', args.architecture, '--val-jpeg-quality', '95']
+                   '--architecture', args.architecture]
     elif args.mode == 'ablation':
         options += ['--no-context']
     elif args.mode == 'refit':

@@ -1,5 +1,6 @@
 """Select residual branches only on development validation, then lock inference."""
 import argparse
+import copy
 import hashlib
 import json
 import math
@@ -8,9 +9,10 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from .data.roi_manifest import MARKERS, digest, selected_names
+from .data.roi_manifest import MARKERS, SEMIFINAL_SEED, digest, selected_names
 from .models.anchored_ihc import AnchoredIHC
-from .train_marker_context import compact, environment, evaluate, load_manifest, load_model, make_loader, seed_all, write_json
+from .train_marker_context import (OFFICIAL_JPEG_QUALITY, compact, environment, evaluate,
+                                   load_manifest, load_model, make_loader, seed_all, write_json)
 
 
 def sha256(path):
@@ -30,7 +32,7 @@ def choose_markers(baseline, candidate):
     return mask
 
 
-def apply_deployment(model, checkpoint, checkpoint_path, path, tta, jpeg_quality, allow_smoke=False):
+def apply_deployment(model, checkpoint, checkpoint_path, path, tta, allow_smoke=False):
     report = json.loads(Path(path).read_text(encoding='utf-8'))
     expected = digest({key: value for key, value in report.items() if key != 'sha256'})
     if report.get('format') != 1 or report.get('sha256') != expected:
@@ -42,15 +44,43 @@ def apply_deployment(model, checkpoint, checkpoint_path, path, tta, jpeg_quality
         raise ValueError('Deployment checkpoint mismatch')
     if report['split_sha256'] != checkpoint['run']['split_sha256'] or tuple(report['markers']) != MARKERS:
         raise ValueError('Deployment split/marker mismatch')
-    if (tta, jpeg_quality) != (report['tta'], report['jpeg_quality']):
-        raise ValueError('Inference must preserve validation TTA and JPEG quality')
+    if tta != report['tta'] or report['seed'] != SEMIFINAL_SEED:
+        raise ValueError('Inference must preserve the semifinal seed and validation TTA')
     if report['smoke_only'] and not allow_smoke:
         raise ValueError('Smoke deployment is not a competition submission')
     mask = report['marker_mask']
     if len(mask) != len(MARKERS) or any(type(value) is not bool for value in mask):
         raise ValueError('Invalid deployment marker mask')
-    model.deployment_mask = mask
+    model.lock_deployment(mask)
     return report
+
+
+def export_final_checkpoint(model, checkpoint, checkpoint_path, report, destination):
+    destination = Path(destination)
+    if destination.exists():
+        raise FileExistsError('Final checkpoint exists; never overwrite a locked model')
+    if report['smoke_only']:
+        raise ValueError('Smoke/subset runs cannot export a semifinal final checkpoint')
+    model.lock_deployment(report['marker_mask'])
+    run = copy.deepcopy(checkpoint['run'])
+    run['protocol'] = 'Semifinal fixed composite model; one checkpoint; no test adaptation'
+    final = {'format': 2, 'kind': 'semifinal_final', 'run': run, 'ema': model.state_dict(),
+             'deployment': {'seed': SEMIFINAL_SEED, 'tta': report['tta'],
+                            'marker_mask': report['marker_mask'],
+                            'selection_report_sha256': report['sha256'],
+                            'source_checkpoint_sha256': sha256(checkpoint_path),
+                            'serialization': report['serialization'],
+                            'test_time_parameters_frozen': True,
+                            'tta_rule': 'fixed geometric transforms, exact inverse, equal-weight mean'}}
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    temporary = destination.with_suffix(destination.suffix+'.tmp')
+    torch.save(final, temporary)
+    temporary.replace(destination)
+    loaded, loaded_checkpoint = load_model(destination, torch.device('cpu'))
+    if (loaded_checkpoint['format'] != 2 or not loaded.deployment_locked.item()
+            or loaded.deployment_mask.tolist() != report['marker_mask']):
+        raise AssertionError('Exported final checkpoint failed verification')
+    return final
 
 
 def select(args):
@@ -78,13 +108,13 @@ def select(args):
         raise ValueError('Validation samples were used for training')
     loader = make_loader(args.data_root, names, args.batch_size, cache=not args.no_cache)
     device = torch.device(args.device)
-    baseline = evaluate(model.baseline, loader, device, args.tta, args.jpeg_quality)
-    candidate = evaluate(model, loader, device, args.tta, args.jpeg_quality)
+    baseline = evaluate(model.baseline, loader, device, args.tta)
+    candidate = evaluate(model, loader, device, args.tta)
     if [r['name'] for r in baseline['rows']] != [r['name'] for r in candidate['rows']]:
         raise ValueError('Paired evaluation order mismatch')
     mask = choose_markers(baseline, candidate)
-    model.deployment_mask = mask
-    deployed = evaluate(model, loader, device, args.tta, args.jpeg_quality)
+    model.lock_deployment(mask)
+    deployed = evaluate(model, loader, device, args.tta)
     for i, marker in enumerate(MARKERS):
         expected = candidate if mask[i] else baseline
         for key in ('ssim', 'psnr'):
@@ -92,7 +122,9 @@ def select(args):
                 raise AssertionError('Selected model differs from independently evaluated branch')
     report = {'format': 1, 'markers': list(MARKERS), 'checkpoint_sha256': sha256(args.checkpoint),
               'split_sha256': manifest['sha256'], 'selection_split': 'val',
-              'validation_names_sha256': digest(names), 'tta': args.tta, 'jpeg_quality': args.jpeg_quality,
+              'validation_names_sha256': digest(names), 'seed': SEMIFINAL_SEED, 'tta': args.tta,
+              'serialization': {'format': 'JPEG', 'quality': OFFICIAL_JPEG_QUALITY,
+                                'subsampling': 0, 'optimize': False},
               'marker_mask': mask, 'smoke_only': smoke,
               'rule': 'enable marker refinement iff validation SSIM increases and PSNR does not decrease',
               'baseline': compact(baseline), 'candidate': compact(candidate), 'deployed': compact(deployed),
@@ -103,6 +135,11 @@ def select(args):
     report['sha256'] = digest(report)
     destination.parent.mkdir(parents=True, exist_ok=True)
     write_json(destination, report)
+    if args.final_checkpoint:
+        # Reload the unlocked candidate because the evaluation instance is already locked.
+        export_model, export_checkpoint = load_model(args.checkpoint, torch.device('cpu'))
+        export_final_checkpoint(export_model, export_checkpoint, args.checkpoint, report,
+                                args.final_checkpoint)
     print(json.dumps({'marker_mask': mask, 'baseline': compact(baseline), 'deployed': compact(deployed),
                       'smoke_only': smoke}), flush=True)
     return report
@@ -116,9 +153,9 @@ def main():
     p.add_argument('--output', required=True)
     p.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
     p.add_argument('--batch-size', type=int, default=4)
-    p.add_argument('--seed', type=int, default=42)
+    p.add_argument('--final-checkpoint')
+    p.add_argument('--seed', type=int, choices=(SEMIFINAL_SEED,), default=SEMIFINAL_SEED)
     p.add_argument('--tta', type=int, choices=(1,4,8), default=4)
-    p.add_argument('--jpeg-quality', type=int, choices=range(1,101), default=95)
     p.add_argument('--limit', type=int, default=0)
     p.add_argument('--no-cache', action='store_true')
     p.add_argument('--allow-smoke', action='store_true')

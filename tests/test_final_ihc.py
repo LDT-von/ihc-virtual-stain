@@ -24,7 +24,7 @@ class ConstantOracle(torch.nn.Module):
 
 class FinalIHCTests(unittest.TestCase):
     def setUp(self):
-        seed_all(42)
+        seed_all(2026)
 
     def test_reverse_flow_reaches_analytic_endpoint_for_both_solvers(self):
         noise, target = torch.randn(2, 3, 8, 9), torch.rand(2, 3, 8, 9)
@@ -90,20 +90,20 @@ class FinalIHCTests(unittest.TestCase):
                     Image.fromarray(a).save(folder/f'ROI{roi:03}_00_00.jpg')
             build_manifest(root, root/'split.json', val_rois=1, holdout_rois=1)
             args = argparse.Namespace(data_root=str(root), manifest=str(root/'split.json'),
-                output=str(root/'run'), seed=42, device='cpu', batch_size=1, width=4,
+                output=str(root/'run'), seed=2026, device='cpu', batch_size=1, width=4,
                 epochs=1, lr=5e-4, no_context=False, no_cache=False, architecture='marker_specific',
-                val_jpeg_quality=95, train_limit=1, val_limit=1, resume=None)
+                train_limit=1, val_limit=1, resume=None)
             train(args)
             net, ck = load_model(root/'run'/'best.pt', torch.device('cpu'))
             self.assertIsInstance(net, MarkerSpecificNet)
-            self.assertEqual(ck['metrics']['jpeg_quality'], 95)
+            self.assertEqual(ck['metrics']['serialization']['quality'], 100)
             args.resume = str(root/'run'/'last.pt')
             train(args)
             inputs = root/'test'/'DAPI'
             inputs.mkdir(parents=True)
             Image.fromarray(np.zeros((256, 256), dtype=np.uint8)).save(inputs/'ROI025_00_00.jpg')
             infer_command(argparse.Namespace(checkpoint=args.resume, input=str(inputs),
-                output=str(root/'pred'), device='cpu', seed=42, batch_size=1, tta=4, jpeg_quality=95))
+                output=str(root/'pred'), device='cpu', seed=2026, batch_size=1, tta=4))
             report = package(inputs, root/'pred', root/'submission.zip')
             self.assertEqual(report['total_images'], 4)
             (root/'pred'/'results'/'test'/'CD68'/'ROI025_00_00_fake.jpg').unlink()
@@ -164,7 +164,7 @@ class FinalIHCTests(unittest.TestCase):
                 'defaults': {'marker': 'CD68'}}
             torch.save({'model': model.state_dict(), 'cfg': config}, root/'model.pt')
             args = argparse.Namespace(ckpt=str(root/'model.pt'), marker='CD68', data_root=str(root),
-                output_dir=str(root/'pred'), batch_size=1, jpeg_quality=95, num_steps=3, solver='heun', seed=42)
+                output_dir=str(root/'pred'), batch_size=1, num_steps=3, solver='heun', seed=2026)
             with patch.object(inference, 'parse_args', return_value=args), \
                  patch.object(inference, 'build_model', return_value=model), \
                  patch.object(inference.FlowMatching, 'sample', return_value=torch.zeros(1,3,256,256)) as sample, \

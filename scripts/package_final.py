@@ -21,6 +21,8 @@ def package(input_dir, prediction_dir, destination, markers=MARKERS):
     expected = {}
     for path in inputs:
         with Image.open(path) as im:
+            if im.size != (256, 256):
+                raise ValueError(f'Official test input must be 256x256: {path}')
             expected[path.stem+'_fake.jpg'] = im.size
     if len(expected) != len(inputs):
         raise ValueError('Duplicate input names')
@@ -35,7 +37,7 @@ def package(input_dir, prediction_dir, destination, markers=MARKERS):
         for name in sorted(expected):
             path = folder/name
             with Image.open(path) as im:
-                if im.format != 'JPEG' or im.size != expected[name] or im.mode not in ('L', 'RGB'):
+                if im.format != 'JPEG' or im.size != expected[name] or im.mode != 'L':
                     raise ValueError(f'Invalid prediction image: {path}')
                 im.load()
             files.append((path, f'results/test/{marker}/{name}'))

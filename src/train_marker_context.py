@@ -20,10 +20,13 @@ from torch import nn
 from torch.utils.data import DataLoader
 
 from .data.roi_manifest import (MARKERS, PairedMarkers, build_manifest, digest,
-                                read_gray, roi_id, selected_names, validate_manifest)
+                                read_gray, roi_id, selected_names, validate_manifest,
+                                SEMIFINAL_SEED)
 from .models.marker_context import MarkerContextNet, local_ssim, reconstruction_loss
 from .models.marker_specific import MarkerSpecificNet
 from .models.anchored_ihc import AnchoredIHC
+
+OFFICIAL_JPEG_QUALITY = 100
 
 
 def build_reconstruction_model(config):
@@ -43,6 +46,8 @@ def amp_context(device):
 
 
 def seed_all(seed):
+    if seed != SEMIFINAL_SEED:
+        raise ValueError(f'Semifinal protocol requires seed={SEMIFINAL_SEED}')
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -71,15 +76,19 @@ def predict(model, x, tta=1):
     for k, f in variants[tta]:
         output = inverse_transform(model(transform(x, k, f)), k, f).float()
         result = output if result is None else result + output
-    return result.div_(len(variants[tta])).clamp_(0, 1)
+    # Equal-weight mean is the final model output. No post-processing follows.
+    return result.div_(len(variants[tta]))
 
 
-def jpeg_roundtrip(pred, quality):
-    images = pred.detach().cpu().mul(255).round().clamp(0, 255).byte().numpy()
+def jpeg_roundtrip(pred):
+    if pred.min().item() < 0 or pred.max().item() > 1:
+        raise ValueError('Model output is outside the official [0,1] range')
+    images = pred.detach().cpu().mul(255).round().to(torch.uint8).numpy()
     for image in images:
         for channel in image:
             buffer = io.BytesIO()
-            Image.fromarray(channel).save(buffer, format='JPEG', quality=quality, subsampling=0)
+            Image.fromarray(channel).save(buffer, format='JPEG', quality=OFFICIAL_JPEG_QUALITY,
+                                          subsampling=0, optimize=False)
             buffer.seek(0)
             with Image.open(buffer) as im:
                 channel[:] = np.asarray(im)
@@ -87,7 +96,7 @@ def jpeg_roundtrip(pred, quality):
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, tta=1, jpeg_quality=0):
+def evaluate(model, loader, device, tta=1):
     model.eval()
     rows = []
     start = time.perf_counter()
@@ -95,7 +104,7 @@ def evaluate(model, loader, device, tta=1, jpeg_quality=0):
         x, y = x.to(device), y.to(device)
         with amp_context(device):
             p = predict(model, x, tta)
-        p = jpeg_roundtrip(p, jpeg_quality) if jpeg_quality else (p*255).round()/255
+        p = jpeg_roundtrip(p)
         scores = local_ssim(p, y).cpu().numpy()
         errors = (p-y).square().mean((-2, -1)).cpu().numpy()
         psnrs = -10*np.log10(np.maximum(errors, 1e-12))
@@ -109,8 +118,10 @@ def evaluate(model, loader, device, tta=1, jpeg_quality=0):
                for r in sorted({row['roi'] for row in rows})}
     return {'count': len(rows), 'ssim': float(np.mean([m['ssim'] for m in marker.values()])),
             'psnr': float(np.mean([m['psnr'] for m in marker.values()])), 'markers': marker,
-            'rois': per_roi, 'tta': tta, 'jpeg_quality': jpeg_quality,
-            'seconds': time.perf_counter()-start, 'rows': rows}
+            'rois': per_roi, 'tta': tta,
+            'seconds': time.perf_counter()-start, 'rows': rows,
+            'serialization': {'format': 'JPEG', 'quality': OFFICIAL_JPEG_QUALITY,
+                              'subsampling': 0, 'optimize': False}}
 
 
 def compact(metrics):
@@ -150,7 +161,8 @@ def write_json(path, value):
 def make_loader(root, names, batch, augment=False, cache=True):
     ds = PairedMarkers(root, names, augment=augment, cache=cache)
     return DataLoader(ds, batch_size=batch, shuffle=augment, num_workers=0,
-                      pin_memory=torch.cuda.is_available(), generator=torch.Generator().manual_seed(42))
+                      pin_memory=torch.cuda.is_available(),
+                      generator=torch.Generator().manual_seed(SEMIFINAL_SEED))
 
 
 def train(args):
@@ -199,6 +211,8 @@ def train(args):
             if baseline.get('format') != 1 or tuple(baseline.get('run', {}).get('markers', ())) != MARKERS:
                 raise ValueError('Baseline is not a supported audited multi-marker checkpoint; inspect its actual architecture first')
             baseline_run = baseline['run']
+            if baseline_run['args'].get('seed') != SEMIFINAL_SEED:
+                raise ValueError(f'Baseline was not trained with semifinal seed={SEMIFINAL_SEED}')
             if baseline_run['model_config'].get('architecture', 'context') not in ('context', 'marker_specific'):
                 raise ValueError('Recursive residual baselines are not supported')
             if baseline_run['split_sha256'] != manifest['sha256']:
@@ -258,7 +272,7 @@ def train(args):
             if ckpt['run'][key] != run[key]:
                 raise ValueError(f'Resume mismatch: {key}')
         # Epoch count controls the cosine schedule; extend by a separate fine-tuning run.
-        for key in ('epochs', 'lr', 'batch_size', 'seed', 'val_jpeg_quality'):
+        for key in ('epochs', 'lr', 'batch_size', 'seed'):
             if ckpt['run']['args'].get(key, 0) != getattr(args, key, 0):
                 raise ValueError(f'Resume must preserve {key}')
         if ckpt['run']['environment']['source_sha256'] != run['environment']['source_sha256']:
@@ -317,7 +331,7 @@ def train(args):
             count += len(x)
             if (batch_index+1) % 100 == 0:
                 print(f'epoch={epoch+1} batch={batch_index+1}/{len(train_loader)} loss={total/count:.5f}', flush=True)
-        metrics = evaluate(ema, val_loader, device, jpeg_quality=getattr(args, 'val_jpeg_quality', 0)) if val_loader is not None else None
+        metrics = evaluate(ema, val_loader, device) if val_loader is not None else None
         improved = metrics is not None and metrics['ssim'] > best
         if metrics is not None:
             best = max(best, metrics['ssim'])
@@ -348,7 +362,7 @@ def train(args):
 
 def load_model(path, device):
     checkpoint = torch.load(path, map_location='cpu', weights_only=False)
-    if checkpoint.get('format') != 1 or tuple(checkpoint['run']['markers']) != MARKERS:
+    if checkpoint.get('format') not in (1, 2) or tuple(checkpoint['run']['markers']) != MARKERS:
         raise ValueError('Unsupported checkpoint/marker order')
     model = build_reconstruction_model(checkpoint['run']['model_config']).to(device)
     model.load_state_dict(checkpoint['ema'], strict=True)
@@ -360,10 +374,6 @@ def eval_command(args):
     manifest = load_manifest(args.manifest, args.data_root)
     device = torch.device(args.device)
     model, checkpoint = load_model(args.checkpoint, device)
-    if getattr(args, 'deployment', None):
-        from .select_ultimate import apply_deployment
-        apply_deployment(model, checkpoint, args.checkpoint, args.deployment, args.tta,
-                         args.jpeg_quality, getattr(args, 'allow_smoke', False))
     if checkpoint['run']['split_sha256'] != manifest['sha256']:
         raise ValueError('Checkpoint/split mismatch')
     names = selected_names(manifest['splits'][args.split], args.limit, args.seed)
@@ -371,7 +381,7 @@ def eval_command(args):
     if set(names) & set(checkpoint['run']['train_names']):
         raise ValueError('Evaluation names were used for training')
     loader = make_loader(args.data_root, names, args.batch_size)
-    metrics = evaluate(model, loader, device, args.tta, args.jpeg_quality)
+    metrics = evaluate(model, loader, device, args.tta)
     metrics.update({'split': args.split, 'split_sha256': manifest['sha256'],
                     'checkpoint_sha256': hashlib.sha256(Path(args.checkpoint).read_bytes()).hexdigest()})
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
@@ -382,18 +392,24 @@ def eval_command(args):
 def infer_command(args):
     if args.batch_size < 1:
         raise ValueError('Batch size must be positive')
-    if not 1 <= args.jpeg_quality <= 100:
-        raise ValueError('JPEG quality must be 1..100')
     seed_all(args.seed)
     device = torch.device(args.device)
     model, checkpoint = load_model(args.checkpoint, device)
-    deployment = None
     if isinstance(model, AnchoredIHC):
-        if not getattr(args, 'deployment', None):
-            raise ValueError('Anchored submission inference requires a locked --deployment manifest')
-        from .select_ultimate import apply_deployment
-        deployment = apply_deployment(model, checkpoint, args.checkpoint, args.deployment,
-                                      args.tta, args.jpeg_quality, getattr(args, 'allow_smoke', False))
+        if checkpoint.get('format') != 2 or checkpoint.get('kind') != 'semifinal_final':
+            raise ValueError('Anchored test inference requires the single exported final checkpoint')
+        deployment = checkpoint['deployment']
+        if deployment['seed'] != SEMIFINAL_SEED or args.tta != deployment['tta']:
+            raise ValueError('Inference seed/TTA must match the locked final checkpoint')
+        if not model.deployment_locked.item():
+            raise ValueError('Final checkpoint has no embedded deployment decision')
+        expected_serialization = {'format': 'JPEG', 'quality': OFFICIAL_JPEG_QUALITY,
+                                  'subsampling': 0, 'optimize': False}
+        if (model.deployment_mask.tolist() != deployment['marker_mask']
+                or deployment['serialization'] != expected_serialization):
+            raise ValueError('Final checkpoint deployment metadata/state mismatch')
+    else:
+        deployment = None
     inputs = sorted(Path(args.input).glob('*.jpg'))
     if not inputs:
         raise ValueError('No input JPEGs')
@@ -409,16 +425,21 @@ def infer_command(args):
             raise ValueError('Expected 256x256 official inputs')
         x = torch.from_numpy(np.stack(arrays)[:, None]).float().to(device)/255
         with amp_context(device):
-            pred = predict(model, x, args.tta).mul(255).round().byte().cpu().numpy()
+            pred = predict(model, x, args.tta)
+            if pred.min().item() < 0 or pred.max().item() > 1:
+                raise ValueError('Model output is outside the official [0,1] range')
+            pred = pred.mul(255).round().to(torch.uint8).cpu().numpy()
         for file, channels in zip(files, pred):
             for marker, channel in zip(MARKERS, channels):
                 Image.fromarray(channel).save(output/'results'/'test'/marker/(file.stem+'_fake.jpg'),
-                                              quality=args.jpeg_quality, subsampling=0)
+                                              quality=OFFICIAL_JPEG_QUALITY, subsampling=0, optimize=False)
         if offset % (args.batch_size*50) == 0:
             print(f'Inferred {min(offset+len(files), len(inputs))}/{len(inputs)}', flush=True)
     write_json(output/'provenance.json', {'input_count': len(inputs), 'markers': list(MARKERS),
-               'deployment_sha256': deployment['sha256'] if deployment else None,
-               'tta': args.tta, 'jpeg_quality': args.jpeg_quality, 'run': checkpoint['run'],
+               'deployment_sha256': deployment['selection_report_sha256'] if deployment else None,
+               'tta': args.tta, 'serialization': {'format': 'JPEG',
+               'quality': OFFICIAL_JPEG_QUALITY, 'subsampling': 0, 'optimize': False},
+               'run': checkpoint['run'],
                'checkpoint_sha256': hashlib.sha256(Path(args.checkpoint).read_bytes()).hexdigest(),
                'input_names_sha256': digest([p.name for p in inputs])})
     print(f'Wrote {len(inputs)*len(MARKERS)} JPEGs. Package only results/, not provenance.json.', flush=True)
@@ -431,14 +452,14 @@ def main():
     s = sub.add_parser('split')
     s.add_argument('--data-root', required=True)
     s.add_argument('--output', required=True)
-    s.add_argument('--seed', type=int, default=42)
+    s.add_argument('--seed', type=int, choices=(SEMIFINAL_SEED,), default=SEMIFINAL_SEED)
     s.add_argument('--val-rois', type=int, default=3)
     s.add_argument('--holdout-rois', type=int, default=3)
     for name in ('train', 'eval', 'infer'):
         p = sub.add_parser(name)
         p.add_argument('--output', required=True)
         p.add_argument('--device', default='cuda' if torch.cuda.is_available() else 'cpu')
-        p.add_argument('--seed', type=int, default=42)
+        p.add_argument('--seed', type=int, choices=(SEMIFINAL_SEED,), default=SEMIFINAL_SEED)
         p.add_argument('--batch-size', type=int, default=4)
         if name != 'infer':
             p.add_argument('--data-root', required=True)
@@ -447,7 +468,6 @@ def main():
             p.add_argument('--architecture', choices=('context', 'marker_specific', 'anchored'), default='context')
             p.add_argument('--baseline-checkpoint', help='Initialize a frozen audited baseline for residual refinement')
             p.add_argument('--residual-limit', type=float, default=.2)
-            p.add_argument('--val-jpeg-quality', type=int, choices=range(0, 101), default=95)
             p.add_argument('--width', type=int, default=16)
             p.add_argument('--epochs', type=int, default=20)
             p.add_argument('--lr', type=float, default=5e-4)
@@ -459,11 +479,8 @@ def main():
             p.add_argument('--init-checkpoint', help='Initialize EMA weights only; start a fresh optimizer/schedule')
             p.add_argument('--full-data', action='store_true', help='Refit all labeled ROIs after locking choices; disables validation')
         else:
-            p.add_argument('--deployment', help='Locked validation marker-selection manifest')
-            p.add_argument('--allow-smoke', action='store_true', help='Pipeline fixtures only; not for competition')
             p.add_argument('--checkpoint', required=True)
             p.add_argument('--tta', type=int, choices=(1, 4, 8), default=1)
-            p.add_argument('--jpeg-quality', type=int, default=95)
             if name == 'eval':
                 p.add_argument('--split', choices=('val', 'holdout'), default='val')
                 p.add_argument('--limit', type=int, default=0)

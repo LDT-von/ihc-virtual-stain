@@ -11,17 +11,17 @@ import numpy as np
 import torch
 from PIL import Image
 
-from src.data.roi_manifest import MARKERS, build_manifest, digest
+from src.data.roi_manifest import MARKERS, SEMIFINAL_SEED, build_manifest, digest
 from src.evaluate_ultimate import evaluate_locked
 from src.models.anchored_ihc import AnchoredIHC
 from src.models.marker_context import reconstruction_loss
-from src.select_ultimate import apply_deployment, choose_markers, select
+from src.select_ultimate import apply_deployment, choose_markers, export_final_checkpoint, select
 from src.train_marker_context import infer_command, load_model, seed_all, train
 
 
 class UltimateTests(unittest.TestCase):
     def setUp(self):
-        seed_all(42)
+        seed_all(SEMIFINAL_SEED)
 
     def test_zero_init_exactly_preserves_baseline_and_freezes_it(self):
         net=AnchoredIHC({'width':4,'markers':4,'context':True},width=4)
@@ -51,7 +51,7 @@ class UltimateTests(unittest.TestCase):
         with torch.no_grad():
             base,candidate=net.baseline(x),net(x)
             self.assertLessEqual((candidate-base).abs().max().item(),.150001)
-            net.deployment_mask=[True,False,True,False]
+            net.lock_deployment([True,False,True,False])
             deployed=net(x)
             torch.testing.assert_close(deployed[:,[1,3]],base[:,[1,3]],rtol=0,atol=0)
             torch.testing.assert_close(deployed[:,[0,2]],candidate[:,[0,2]],rtol=0,atol=0)
@@ -76,8 +76,8 @@ class UltimateTests(unittest.TestCase):
                 Image.fromarray(arr).save(folder/f'ROI{roi:03}_00_00.jpg')
         build_manifest(root,root/'split.json',val_rois=1,holdout_rois=1)
         return argparse.Namespace(data_root=str(root),manifest=str(root/'split.json'),
-            output=str(root/'base'),seed=42,device='cpu',batch_size=1,width=4,epochs=1,lr=5e-4,
-            no_context=False,no_cache=False,architecture='context',val_jpeg_quality=95,
+            output=str(root/'base'),seed=SEMIFINAL_SEED,device='cpu',batch_size=1,width=4,epochs=1,lr=5e-4,
+            no_context=False,no_cache=False,architecture='context',
             train_limit=1,val_limit=1,resume=None)
 
     def test_train_resume_select_and_locked_inference(self):
@@ -98,7 +98,8 @@ class UltimateTests(unittest.TestCase):
             train(args)
             selection_args=argparse.Namespace(data_root=str(root),manifest=str(root/'split.json'),
                 checkpoint=str(root/'refiner/best.pt'),output=str(root/'deployment.json'),
-                device='cpu',batch_size=1,seed=42,tta=4,jpeg_quality=95,limit=1,no_cache=False,allow_smoke=True)
+                device='cpu',batch_size=1,seed=SEMIFINAL_SEED,tta=4,limit=1,no_cache=False,
+                allow_smoke=True,final_checkpoint=None)
             report=select(selection_args)
             self.assertTrue(report['smoke_only'])
             for marker in MARKERS:
@@ -106,51 +107,24 @@ class UltimateTests(unittest.TestCase):
                     self.assertGreaterEqual(report['deployed']['markers'][marker][metric]+2e-6,
                                             report['baseline']['markers'][marker][metric])
             with self.assertRaisesRegex(ValueError,'Smoke'):
-                apply_deployment(net,ck,selection_args.checkpoint,root/'deployment.json',4,95)
+                apply_deployment(net,ck,selection_args.checkpoint,root/'deployment.json',4)
             with self.assertRaisesRegex(ValueError,'TTA'):
-                apply_deployment(net,ck,selection_args.checkpoint,root/'deployment.json',8,95,True)
-            holdout_args=argparse.Namespace(data_root=str(root),manifest=str(root/'split.json'),
-                checkpoint=selection_args.checkpoint,deployment=str(root/'deployment.json'),
-                output=str(root/'holdout.json'),device='cpu',batch_size=1,seed=42,no_cache=False,allow_smoke=True)
-            held=evaluate_locked(holdout_args)
-            self.assertEqual(held['split'],'holdout')
-            self.assertEqual(held['deployed']['count'],1)
-            self.assertEqual(held['deployment_sha256'],report['sha256'])
-            with self.assertRaises(FileExistsError):
-                evaluate_locked(holdout_args)
-            holdout_args.output=str(root/'leaky_holdout.json')
-            leaked=copy.deepcopy(ck)
-            leaked['run']['train_names']+=json.loads((root/'split.json').read_text())['splits']['holdout']
-            torch.save(leaked,root/'leaked_candidate.pt')
-            holdout_args.checkpoint=str(root/'leaked_candidate.pt')
-            from src.select_ultimate import sha256
-            leaked_report=copy.deepcopy(report)
-            leaked_report['checkpoint_sha256']=sha256(holdout_args.checkpoint)
-            leaked_report['sha256']=digest({k:v for k,v in leaked_report.items() if k!='sha256'})
-            (root/'leaked_deployment.json').write_text(json.dumps(leaked_report))
-            holdout_args.deployment=str(root/'leaked_deployment.json')
-            with self.assertRaisesRegex(ValueError,'used for training'):
-                evaluate_locked(holdout_args)
-            inputs=root/'test/DAPI'
-            inputs.mkdir(parents=True)
-            Image.fromarray(np.zeros((256,256),dtype=np.uint8)).save(inputs/'ROI025_00_00.jpg')
-            infer=argparse.Namespace(checkpoint=selection_args.checkpoint,input=str(inputs),output=str(root/'pred'),
-                deployment=str(root/'deployment.json'),device='cpu',seed=42,batch_size=1,tta=4,jpeg_quality=95,
-                allow_smoke=True)
-            infer_command(infer)
-            self.assertEqual(len(list((root/'pred/results/test').glob('*/*_fake.jpg'))),4)
+                apply_deployment(net,ck,selection_args.checkpoint,root/'deployment.json',8,True)
+            unlocked,unlocked_ck=load_model(selection_args.checkpoint,torch.device('cpu'))
+            with self.assertRaisesRegex(ValueError,'Smoke'):
+                export_final_checkpoint(unlocked,unlocked_ck,selection_args.checkpoint,report,root/'final.pt')
             broken=copy.deepcopy(report)
             broken['checkpoint_sha256']='wrong'
             broken['sha256']=digest({k:v for k,v in broken.items() if k!='sha256'})
             (root/'bad.json').write_text(json.dumps(broken))
             with self.assertRaisesRegex(ValueError,'checkpoint mismatch'):
-                apply_deployment(net,ck,selection_args.checkpoint,root/'bad.json',4,95,True)
+                apply_deployment(net,ck,selection_args.checkpoint,root/'bad.json',4,True)
             broken=copy.deepcopy(report)
             broken['inference_source_sha256']={}
             broken['sha256']=digest({k:v for k,v in broken.items() if k!='sha256'})
             (root/'changed_source.json').write_text(json.dumps(broken))
             with self.assertRaisesRegex(ValueError,'source changed'):
-                apply_deployment(net,ck,selection_args.checkpoint,root/'changed_source.json',4,95,True)
+                apply_deployment(net,ck,selection_args.checkpoint,root/'changed_source.json',4,True)
             # Full-data checkpoints cannot be reused as held-out baselines.
             base_ck['run']['train_names']+=json.loads((root/'split.json').read_text())['splits']['val']
             torch.save(base_ck,root/'leaky.pt')
@@ -179,6 +153,12 @@ class UltimateTests(unittest.TestCase):
                     self.assertEqual(result.returncode,0,result.stdout+result.stderr)
                 return result
             invoke('--mode','train')
+            final_model,final_ck=load_model(root/'full/final.pt',torch.device('cpu'))
+            self.assertEqual(final_ck['format'],2)
+            self.assertEqual(final_ck['kind'],'semifinal_final')
+            self.assertTrue(final_model.deployment_locked.item())
+            self.assertEqual(final_ck['deployment']['seed'],SEMIFINAL_SEED)
+            self.assertNotIn('optimizer',final_ck)
             invoke('--mode','train','--resume')
             missing=invoke('--mode','predict','--output',str(root/'submission'),check=False)
             self.assertNotEqual(missing.returncode,0)
@@ -189,8 +169,11 @@ class UltimateTests(unittest.TestCase):
                 self.assertEqual(len(archive.namelist()),4)
                 self.assertTrue(all(name.startswith('results/test/') for name in archive.namelist()))
             provenance=json.loads((root/'submission/provenance.json').read_text())
-            decision=json.loads((root/'full/deployment.json').read_text())
-            self.assertEqual(provenance['deployment_sha256'],decision['sha256'])
+            self.assertEqual(provenance['deployment_sha256'],final_ck['deployment']['selection_report_sha256'])
+
+    def test_rejects_any_non_semifinal_seed(self):
+        with self.assertRaisesRegex(ValueError,'seed=2026'):
+            seed_all(42)
 
 
 if __name__=='__main__':

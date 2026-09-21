@@ -10,7 +10,7 @@ import torch
 from PIL import Image
 from skimage.metrics import structural_similarity
 
-from src.data.roi_manifest import (MARKERS, PairedMarkers, build_manifest, digest,
+from src.data.roi_manifest import (MARKERS, SEMIFINAL_SEED, PairedMarkers, build_manifest, digest,
                                     read_gray, validate_manifest)
 from src.models.marker_context import MarkerContextNet, local_ssim, reconstruction_loss
 from src.train_marker_context import (eval_command, infer_command, inverse_transform,
@@ -19,7 +19,7 @@ from src.train_marker_context import (eval_command, infer_command, inverse_trans
 
 class MarkerContextTests(unittest.TestCase):
     def setUp(self):
-        seed_all(42)
+        seed_all(SEMIFINAL_SEED)
 
     def test_local_ssim_matches_skimage(self):
         rng = np.random.default_rng(1)
@@ -106,6 +106,11 @@ class MarkerContextTests(unittest.TestCase):
                 validate_manifest(manifest)
             with self.assertRaises(FileExistsError):
                 build_manifest(root, root/'manifest.json')
+            manifest = self.make_fixture(root/'other')
+            manifest['seed'] = 42
+            manifest['sha256'] = digest({k: v for k, v in manifest.items() if k != 'sha256'})
+            with self.assertRaisesRegex(ValueError, 'seed=2026'):
+                validate_manifest(manifest)
 
     def test_augmentation_preserves_target_intensity_and_alignment(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -132,7 +137,7 @@ class MarkerContextTests(unittest.TestCase):
             root = Path(temp)
             self.make_fixture(root)
             args = argparse.Namespace(data_root=str(root), manifest=str(root/'manifest.json'),
-                output=str(root/'run'), seed=42, device='cpu', batch_size=2, width=4,
+                output=str(root/'run'), seed=SEMIFINAL_SEED, device='cpu', batch_size=2, width=4,
                 epochs=1, lr=5e-4, no_context=False, no_cache=False,
                 train_limit=2, val_limit=1, resume=None)
             train(args)
@@ -140,15 +145,15 @@ class MarkerContextTests(unittest.TestCase):
             self.assertEqual(tuple(ckpt['run']['markers']), MARKERS)
             self.assertEqual(ckpt['steps'], 1)
             eval_args = argparse.Namespace(data_root=str(root), manifest=str(root/'manifest.json'),
-                checkpoint=str(root/'run'/'best.pt'), seed=42, device='cpu', batch_size=2,
-                split='holdout', limit=1, tta=1, jpeg_quality=95, output=str(root/'holdout.json'))
+                checkpoint=str(root/'run'/'best.pt'), seed=SEMIFINAL_SEED, device='cpu', batch_size=2,
+                split='holdout', limit=1, tta=1, output=str(root/'holdout.json'))
             eval_command(eval_args)
             self.assertEqual(json.loads((root/'holdout.json').read_text())['count'], 1)
             inference_input = root/'inputs'
             inference_input.mkdir()
             Image.fromarray(np.zeros((256, 256), dtype=np.uint8)).save(inference_input/'ROI025_00_00.jpg')
             infer_args = argparse.Namespace(checkpoint=eval_args.checkpoint, input=str(inference_input),
-                output=str(root/'submission'), device='cpu', seed=42, batch_size=2, tta=8, jpeg_quality=95)
+                output=str(root/'submission'), device='cpu', seed=SEMIFINAL_SEED, batch_size=2, tta=8)
             infer_command(infer_args)
             files = list((root/'submission'/'results'/'test').glob('*/*_fake.jpg'))
             self.assertEqual(len(files), 4)

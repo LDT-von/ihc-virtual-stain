@@ -27,6 +27,8 @@ from src.models.flow_matching import FlowMatching, FlowMatchingConfig, build_mod
 
 
 MARKERS = ['HLA-DR', 'CD68', 'CD45RO', 'Vimentin']
+SEMIFINAL_SEED = 2026
+OFFICIAL_JPEG_QUALITY = 100
 
 
 def parse_args():
@@ -36,10 +38,9 @@ def parse_args():
     p.add_argument('--data-root', required=True)
     p.add_argument('--output-dir', default='results/HLA-DR_fm_submission')
     p.add_argument('--batch-size', type=int, default=8)
-    p.add_argument('--jpeg-quality', type=int, default=95)
     p.add_argument('--num-steps', type=int, default=50,
                    help='ODE sampling steps (overrides checkpoint default)')
-    p.add_argument('--seed', type=int, default=42)
+    p.add_argument('--seed', type=int, choices=(SEMIFINAL_SEED,), default=SEMIFINAL_SEED)
     p.add_argument('--solver', choices=('euler', 'heun'), default='heun')
     return p.parse_args()
 
@@ -48,8 +49,8 @@ def main():
     sys.stdout.reconfigure(encoding='utf-8')
     args = parse_args()
     torch.manual_seed(args.seed)
-    if args.batch_size < 1 or not 1 <= args.jpeg_quality <= 100:
-        raise ValueError('Invalid batch size or JPEG quality')
+    if args.batch_size < 1:
+        raise ValueError('Invalid batch size')
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f'[FM-Infer] marker={args.marker} ckpt={args.ckpt}')
 
@@ -135,7 +136,8 @@ def main():
                 if not fname.lower().endswith(('.jpg', '.jpeg', '.png')):
                     fname = fname + '.jpg'
                 out_path = out_dir / (Path(fname).stem + '_fake.jpg')
-                Image.fromarray(ihc_np[i]).save(out_path, quality=args.jpeg_quality)
+                Image.fromarray(ihc_np[i]).save(out_path, quality=OFFICIAL_JPEG_QUALITY,
+                                                subsampling=0, optimize=False)
                 saved += 1
 
             if (batch_idx + 1) % 10 == 0:
@@ -149,7 +151,9 @@ def main():
     (Path(args.output_dir)/f'provenance_{args.marker}.json').write_text(json.dumps({
         'checkpoint': str(Path(args.ckpt).resolve()), 'marker': args.marker, 'images': saved,
         'num_steps': args.num_steps, 'solver': args.solver, 'seed': args.seed,
-        'jpeg_quality': args.jpeg_quality, 'sampling_direction': 'positive cleanward velocity'
+        'serialization': {'format': 'JPEG', 'quality': OFFICIAL_JPEG_QUALITY,
+                          'subsampling': 0, 'optimize': False},
+        'sampling_direction': 'positive cleanward velocity'
     }, indent=2), encoding='utf-8')
 
 
