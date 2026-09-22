@@ -1,0 +1,9 @@
+# 本快照（AIC-2026-51704013 / 平台分 74.6531）实际使用的依赖。
+# 已核验运行环境：Python 3.13.5 (Anaconda) / torch 2.6.0+cu124 /
+#                Windows 10.0.19045 / NVIDIA GeForce RTX 3090
+torch>=2.1.0
+numpy>=1.24
+Pillow>=10.0
+# 下列依赖只被 src/metrics/ssim_psnr.py 使用：
+#   skimage 用于与官方口径交叉核对局部 SSIM
+scikit-image>=0.21

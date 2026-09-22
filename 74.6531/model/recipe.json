@@ -1,0 +1,17 @@
+{
+  "data_root": "E:\\aic\\\u590d\u8d5b\u6570\u636e\u96c6(\u5305\u62ec\u8bad\u7ec3\u96c6\u548c\u6d4b\u8bd5\u96c6\u8f93\u5165)",
+  "run_dir": "E:\\aic\\final-ihc\\checkpoints\\ultimate_w48_2380",
+  "manifest": "E:\\aic\\final-ihc\\configs\\roi_split_semifinal_2026_2380.json",
+  "mode": "train",
+  "baseline_checkpoint": null,
+  "baseline_epochs": 60,
+  "refine_epochs": 20,
+  "baseline_width": 48,
+  "width": 24,
+  "batch_size": 4,
+  "device": "cuda",
+  "tta": 4,
+  "seed": 2026,
+  "no_cache": false,
+  "split_sha256": "c050a1378ffa4027d628a24502e5431174a390050d4b6fb9f23f469ab8726444"
+}
