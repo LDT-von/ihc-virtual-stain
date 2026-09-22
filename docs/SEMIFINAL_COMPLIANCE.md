@@ -1,6 +1,8 @@
 # 复赛合规清单
 
-当前唯一正式入口为 `scripts/run_final.py`，固定随机种子 2026，默认划分为 `configs/roi_split_semifinal_2026.json`。
+当前唯一正式入口为 `scripts/run_final.py`，固定随机种子 2026。`--manifest` 默认值为 `configs/roi_split_semifinal_2026.json`；**本次取得平台分的模型使用的是复赛数据集划分 `configs/roi_split_semifinal_2026_2380.json`（train=1540、val=420、holdout=420，sha256 `c050a1378ffa4027d628a24502e5431174a390050d4b6fb9f23f469ab8726444`）。**
+
+已通过平台验证：提交号 **AIC-2026-51704013**（2026-09-22 10:29）得分 **74.6531**，对应 `predictions/ultimate_w48_2380_rgb/submission.zip`（w48 冻结基准、复赛数据划分、seed=2026、TTA=4、8-bit RGB，2240 张）。
 
 | 规则 | 实现与约束 |
 |---|---|
@@ -10,8 +12,8 @@
 | 单模型、单 checkpoint | 训练阶段的基准与残差器组成一个固定级联结构；验证选择作为持久 buffer 写入唯一 `final.pt`。测试入口拒绝普通训练 checkpoint。 |
 | 冻结测试 | 加载后 `eval()`，TTA 预测处于 `no_grad()`；没有优化器、反向传播、BN 更新、自监督或测试适配。 |
 | TTA | 固定几何变换，逐一精确逆变换，同一 `final.pt` 的结果等权平均。TTA 配置从 checkpoint 读取并校验。 |
-| 无后处理 | TTA 均值直接转换为灰度 uint8 JPEG；没有阈值、二值化、形态学、去噪、平滑、锐化、亮度、对比度、Gamma、直方图匹配或 CLAHE。 |
-| 固定序列化 | 输出固定为 256×256 灰度 JPEG，quality=100、subsampling=0、optimize=false；没有测试时可调压缩参数。 |
+| 无后处理 | TTA 均值直接转换为 8-bit RGB uint8 JPEG；没有阈值、二值化、形态学、去噪、平滑、锐化、亮度、对比度、Gamma、直方图匹配或 CLAHE。 |
+| 固定序列化 | 输出固定为 256×256、8-bit RGB（三通道相同）JPEG，quality=100、subsampling=0、optimize=false；没有测试时可调压缩参数。 |
 | 无 Test GT/统计 | Test 只逐图读取 DAPI 并固定除以 255；不使用 Test Marker、整体统计量、动态归一化或样本筛选。 |
 | 决策来源 | epoch、checkpoint、marker gate、TTA 均由 Train/Val 确定并写入审计记录；Holdout 只执行一次锁定检查，Test 只作最终预测。 |
 

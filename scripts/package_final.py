@@ -37,7 +37,7 @@ def package(input_dir, prediction_dir, destination, markers=MARKERS):
         for name in sorted(expected):
             path = folder/name
             with Image.open(path) as im:
-                if im.format != 'JPEG' or im.size != expected[name] or im.mode != 'L':
+                if im.format != 'JPEG' or im.size != expected[name] or im.mode != 'RGB':
                     raise ValueError(f'Invalid prediction image: {path}')
                 im.load()
             files.append((path, f'results/test/{marker}/{name}'))

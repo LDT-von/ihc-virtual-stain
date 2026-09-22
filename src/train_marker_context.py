@@ -431,8 +431,10 @@ def infer_command(args):
             pred = pred.mul(255).round().to(torch.uint8).cpu().numpy()
         for file, channels in zip(files, pred):
             for marker, channel in zip(MARKERS, channels):
-                Image.fromarray(channel).save(output/'results'/'test'/marker/(file.stem+'_fake.jpg'),
-                                              quality=OFFICIAL_JPEG_QUALITY, subsampling=0, optimize=False)
+                # 官方要求 8-bit RGB，官方数据本身也是三通道相同的灰度信号
+                rgb = np.repeat(channel[:, :, None], 3, axis=2)
+                Image.fromarray(rgb).save(output/'results'/'test'/marker/(file.stem+'_fake.jpg'),
+                                          quality=OFFICIAL_JPEG_QUALITY, subsampling=0, optimize=False)
         if offset % (args.batch_size*50) == 0:
             print(f'Inferred {min(offset+len(files), len(inputs))}/{len(inputs)}', flush=True)
     write_json(output/'provenance.json', {'input_count': len(inputs), 'markers': list(MARKERS),

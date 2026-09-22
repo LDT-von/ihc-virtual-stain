@@ -1,12 +1,12 @@
 # IHC Virtual Stain (DAPI → IHC)
 
-## 当前主线：IHC Ultimate v1（2026-09-20，待完整性能验收）
+## 当前主线：IHC Ultimate v1（2026-09-20；2026-09-22 平台分 74.6531）
 
 冻结 MCN 基准，利用 DAPI 与基准的四标记预测进行联合残差精修；四个独立解码器从零修正开始。
 同一验证集、同一 TTA 和 JPEG 编码下，某标记只有 SSIM 提升且 PSNR 不降才启用精修，否则保留基准。
-复赛入口强制统一随机种子 `2026`，默认使用 `configs/roi_split_semifinal_2026.json`；
+复赛入口强制统一随机种子 `2026`；`--manifest` 默认值为 `configs/roi_split_semifinal_2026.json`（初赛数据全量划分 4711/782/803），而本次取得 74.6531 的模型使用的是 `configs/roi_split_semifinal_2026_2380.json`（复赛数据集划分 train=1540、val=420、holdout=420，sha256 `c050a1378ffa4027…`）；
 验证选择会被写入唯一的 `final.pt`，测试阶段只加载该 checkpoint，模型冻结，固定几何 TTA 逆变换后等权平均。
-输出不做阈值、形态学、去噪、锐化、亮度/Gamma/直方图等后处理，只执行固定的灰度 uint8 JPEG 序列化。
+输出不做阈值、形态学、去噪、锐化、亮度/Gamma/直方图等后处理，只执行固定的 8-bit RGB uint8 JPEG 序列化（三通道相同，quality=100、subsampling=0）。
 
 ```bash
 python scripts/run_final.py --data-root "DATA_ROOT" --run-dir checkpoints/ultimate_v1 --mode train
@@ -15,7 +15,7 @@ python scripts/run_final.py --data-root "DATA_ROOT" --run-dir checkpoints/ultima
 ```
 
 训练、恢复、历史权重接入、独立评估及提交说明见 [ULTIMATE_IHC.md](docs/ULTIMATE_IHC.md)。
-**24 项合规与回归检查已通过。seed=42 的既有权重仅作历史记录，不符合复赛统一种子要求，必须用当前入口从头训练。尚无完整新权重或平台成绩，不能宣称超过用户记录的 67.9114。**
+**24 项合规与回归检查已通过。seed=42 的既有权重仅作历史记录，不符合复赛统一种子要求。复赛版已完成完整训练，并于 2026-09-22 以提交号 AIC-2026-51704013 取得平台分 74.6531，超过用户记录的历史最高 67.9114。**
 历史 FM 修复另见 [FINAL_IHC.md](docs/FINAL_IHC.md)，不能用 FM 的错误解释 MCN/UNet 的分数。下方是历史方案记录。
 
 AIC 2026 初赛 — DAPI 荧光图到 IHC 染色图的虚拟染色任务。
@@ -120,6 +120,7 @@ python make_submission.py
 
 | 提交时间 | 分数 | 说明 |
 |---------|------|------|
+| 2026-09-22 | **74.6531** | w48 冻结基准（复赛数据 1540/420/420、seed=2026、TTA=4、8-bit RGB）；提交号 AIC-2026-51704013 |
 | 2026-09-10 | 64.0891 | 初始 4 marker 联合 |
 | 2026-09-10 | 67.4586 | 全量数据微调后 TTA 推理 |
 
