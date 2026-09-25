@@ -74,12 +74,9 @@ def predict(model, x, tta=1):
         raise ValueError('TTA must be 1, 4 or 8')
     result = None
     for k, f in variants[tta]:
-        # model may return Tensor or (main, aux) tuple; we only want main output
-        out = model(transform(x, k, f))
-        if isinstance(out, tuple):
-            out = out[0]
-        out = inverse_transform(out, k, f).float()
-        result = out if result is None else result + out
+        output = inverse_transform(model(transform(x, k, f)), k, f).float()
+        result = output if result is None else result + output
+    # Equal-weight mean is the final model output. No post-processing follows.
     return result.div_(len(variants[tta]))
 
 
@@ -161,7 +158,7 @@ def write_json(path, value):
     Path(path).write_text(json.dumps(value, indent=2, ensure_ascii=False), encoding='utf-8')
 
 
-def make_loader(root, names, batch, augment=False, cache=True):  # batch positional
+def make_loader(root, names, batch, augment=False, cache=True):
     ds = PairedMarkers(root, names, augment=augment, cache=cache)
     return DataLoader(ds, batch_size=batch, shuffle=augment, num_workers=0,
                       pin_memory=torch.cuda.is_available(),

@@ -1,0 +1,84 @@
+{
+  "platform_submissions": [
+    {
+      "submission_zip": "submission_w96_expanded_tta4_semi.zip",
+      "platform_score": 75.0876,
+      "platform_per_marker": {
+        "CD68": {
+          "SSIM": 0.773,
+          "PSNR": 28.1
+        },
+        "CD45RO": {
+          "SSIM": 0.894,
+          "PSNR": 26.533
+        },
+        "HLA-DR": {
+          "SSIM": 0.85,
+          "PSNR": 25.484
+        },
+        "Vimentin": {
+          "SSIM": 0.865,
+          "PSNR": 25.958
+        }
+      }
+    },
+    {
+      "submission_zip": "submission_w48_refiner.zip",
+      "platform_score": 74.6531,
+      "platform_per_marker": {
+        "CD68": {
+          "SSIM": 0.769,
+          "PSNR": 27.902
+        },
+        "CD45RO": {
+          "SSIM": 0.891,
+          "PSNR": 26.375
+        },
+        "HLA-DR": {
+          "SSIM": 0.845,
+          "PSNR": 25.101
+        },
+        "Vimentin": {
+          "SSIM": 0.861,
+          "PSNR": 25.613
+        }
+      }
+    },
+    {
+      "submission_zip": "fullplus_cd68_v3_rgb_FIXED.zip",
+      "platform_score": 75.1128,
+      "platform_per_marker": {
+        "CD68": null,
+        "CD45RO": null,
+        "HLA-DR": null,
+        "Vimentin": null
+      },
+      "note": "Per-marker breakdown not captured; total 75.1128 confirmed by user"
+    }
+  ],
+  "current_best": {
+    "submission_zip": "fullplus_cd68_v3_rgb_FIXED.zip",
+    "platform_score": 75.1128
+  },
+  "target": {
+    "score": 78.3845,
+    "per_marker": {
+      "CD68": {
+        "SSIM": 0.893,
+        "PSNR": 26.499
+      },
+      "CD45RO": {
+        "SSIM": 0.893,
+        "PSNR": 26.499
+      },
+      "HLA-DR": {
+        "SSIM": 0.893,
+        "PSNR": 26.499
+      },
+      "Vimentin": {
+        "SSIM": 0.893,
+        "PSNR": 26.499
+      }
+    }
+  }
+}

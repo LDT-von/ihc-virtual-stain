@@ -41,6 +41,8 @@ results_*/
 **/test/
 **/DAPI/
 **/IHC_*/
+test_semi_DAPI/
+复赛数据集(包括训练集和测试集输入)/
 
 # 日志与临时文件
 logs/

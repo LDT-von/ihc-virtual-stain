@@ -116,8 +116,56 @@ class PairedMarkers(Dataset):
             arr = np.rot90(arr, random.randrange(4), axes=(-2, -1))
             if random.random() < .5:
                 arr = arr[..., ::-1]
+            # ---- Official competition augmentation ----
+            arr = self._color_augment(arr)
+            # Random translation (up to 10% of image)
+            if random.random() < 0.3:
+                arr = self._random_translate(arr)
         tensor = torch.from_numpy(np.array(arr, copy=True)).float().div_(255)
         return tensor[:1], tensor[1:], self.names[index]
+
+    def _color_augment(self, arr):
+        """Brightness, contrast, gamma, and noise augmentation (same for all channels)."""
+        # Single random transform per call for efficiency
+        r = random.random()
+        if r < 0.25:
+            # Brightness: ±20%
+            delta = random.uniform(-0.2, 0.2)
+            arr = np.clip(arr + delta, 0, 255)
+        elif r < 0.50:
+            # Contrast: scale by 0.8-1.2
+            factor = random.uniform(0.8, 1.2)
+            arr = np.clip((arr - 127.5) * factor + 127.5, 0, 255)
+        elif r < 0.75:
+            # Gamma: 0.7-1.4
+            gamma = random.uniform(0.7, 1.4)
+            arr = np.clip(((arr / 255.0) ** gamma) * 255, 0, 255)
+        # else: no color augment
+        return arr
+
+    def _random_translate(self, arr):
+        """Random translation up to 10% of image size, filling with border values."""
+        h, w = arr.shape[-2:]
+        max_shift = max(h, w) // 10
+        dy = random.randint(-max_shift, max_shift)
+        dx = random.randint(-max_shift, max_shift)
+        if dy == 0 and dx == 0:
+            return arr
+        # For each channel, roll and handle wrap-around by clamping edges
+        result = np.empty_like(arr)
+        for c in range(arr.shape[0]):
+            shifted = np.roll(arr[c], (dy, dx), axis=(0, 1))
+            # Fill rolled-in zeros with border replication
+            if dy > 0:
+                shifted[:dy] = arr[c, :1]
+            elif dy < 0:
+                shifted[dy:] = arr[c, -1:]
+            if dx > 0:
+                shifted[:, :dx] = shifted[:, dx:dx+1]
+            elif dx < 0:
+                shifted[:, dx:] = shifted[:, dx-1:dx]
+            result[c] = shifted
+        return result
 
 
 def selected_names(names, limit, seed):

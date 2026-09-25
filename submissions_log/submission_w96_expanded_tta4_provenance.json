@@ -1,0 +1,9 @@
+{
+  "submission_zip": "submission_w96_expanded_tta4.zip",
+  "zip_size_mb": 75.23,
+  "checkpoint": "best.pt",
+  "checkpoint_sha256": "ea54be420503eea33f28235fa82c7dc194ba4c6c96c7e0190fe1fb5cbcb0d4d8",
+  "checkpoint_size_mb": 230.19,
+  "history_best_ssim": "see checkpoints/ultimate_w96_expanded/baseline/history.jsonl",
+  "note": "Re-run pack_best_zip.py to regenerate provenance.json if needed (it gets cleaned)."
+}

@@ -1,0 +1,19 @@
+{
+  "submission_zip": "submission_w96_expanded_tta4_semi.zip",
+  "zip_size_mb": 31.33,
+  "checkpoint": "checkpoints\\ultimate_w96_expanded\\baseline\\best.pt",
+  "checkpoint_sha256": "ea54be420503eea33f28235fa82c7dc194ba4c6c96c7e0190fe1fb5cbcb0d4d8",
+  "checkpoint_size_mb": 230.19,
+  "test_dir_used": "E:/aic/final-ihc/test_semi_DAPI  (semifinal 560 files)",
+  "model_width": 96,
+  "tta": 4,
+  "total_entries_in_zip": 2240,
+  "gt_count": 560,
+  "markers": [
+    "HLA-DR",
+    "CD68",
+    "CD45RO",
+    "Vimentin"
+  ],
+  "note": "Used official semifinal test DAPI dir (560 files = ROI017/025/053/095 x 140). w96 expanded baseline."
+}
