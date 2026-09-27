@@ -82,16 +82,27 @@
         "ROI078_PSNR": 24.214,
         "note": "Local highest ever; platform third"
       }
+    },
+    {
+      "submission_zip": "ensemble_allin_rgb.zip",
+      "platform_score": 75.2485,
+      "platform_per_marker": null,
+      "submitted_at": "2026-09-27",
+      "note": "NEW BEST. 5-model ALL-IN ensemble (v6+v5+v4+v3+w96); beats v3 by +0.1357. Per-marker breakdown not captured."
     }
   ],
   "current_best": {
-    "submission_zip": "fullplus_cd68_v3_rgb_FIXED.zip",
-    "platform_score": 75.1128
+    "submission_zip": "ensemble_allin_rgb.zip",
+    "platform_score": 75.2485,
+    "improvement_over_v3": 0.1357,
+    "improvement_over_w96": 0.1609,
+    "achieved_at": "2026-09-27"
   },
   "history_ranking": [
-    {"rank": 1, "zip": "fullplus_cd68_v3_rgb_FIXED.zip", "score": 75.1128},
-    {"rank": 2, "zip": "submission_w96_expanded_tta4_semi.zip", "score": 75.0876},
-    {"rank": 3, "zip": "fullplus_cd68_v6_rgb.zip", "score": 75.0463}
+    {"rank": 1, "zip": "ensemble_allin_rgb.zip", "score": 75.2485, "note": "ALL-IN 5-model ensemble"},
+    {"rank": 2, "zip": "fullplus_cd68_v3_rgb_FIXED.zip", "score": 75.1128},
+    {"rank": 3, "zip": "submission_w96_expanded_tta4_semi.zip", "score": 75.0876},
+    {"rank": 4, "zip": "fullplus_cd68_v6_rgb.zip", "score": 75.0463}
   ],
   "target": {
     "score": 78.3845,
