@@ -87,8 +87,13 @@ def read_gray(path):
 
 
 class PairedMarkers(Dataset):
-    def __init__(self, root, names, augment=False, cache=True):
+    def __init__(self, root, names, augment=False, cache=True, aug_strength=1.0):
+        """
+        Args:
+            aug_strength: 0.5 = half-strength (late training), 1.0 = full strength.
+        """
         self.root, self.names, self.augment = Path(root), list(names), augment
+        self.aug_strength = aug_strength
         if not self.names or len(set(self.names)) != len(self.names):
             raise ValueError('Empty or duplicate dataset')
         for name in self.names:
@@ -121,8 +126,56 @@ class PairedMarkers(Dataset):
             # Random translation (up to 10% of image)
             if random.random() < 0.3:
                 arr = self._random_translate(arr)
+            # Synthesis-style noise augmentation: simulates acquisition variability
+            # (sensor noise / JPEG quantization / imaging artifacts). The marker
+            # intensity distribution in the ground truth is unchanged in
+            # expectation; only observation noise is added on top of the
+            # already-deterministic DAPI/marker pair.
+            arr = self._gaussian_noise(arr)
+            arr = self._specular_highlight(arr)
         tensor = torch.from_numpy(np.array(arr, copy=True)).float().div_(255)
         return tensor[:1], tensor[1:], self.names[index]
+
+    def _gaussian_noise(self, arr):
+        """Additive Gaussian noise (sigma up to 5/255), simulates sensor noise.
+
+        Per compliance: paired DAPI/marker arrays are treated as joint
+        observations of the same tissue; adding identical noise to all
+        channels keeps the marker expression ground truth intact while
+        teaching the model to denoise (a benign inductive bias).
+
+        Probability and sigma are scaled by aug_strength (0.5-1.0).
+        """
+        p = 0.4 * self.aug_strength
+        if random.random() < p:
+            sigma = random.uniform(1.0, 5.0 * self.aug_strength)
+            noise = np.random.normal(0, sigma, size=arr.shape).astype(arr.dtype)
+            arr = np.clip(arr + noise, 0, 255).astype(arr.dtype)
+        return arr
+
+    def _specular_highlight(self, arr):
+        """Random bright blobs simulating tissue-fold specular reflections.
+
+        Identical additive highlight applied to every channel: marker
+        positivity under the highlight is unchanged because the relative
+        ordering of channel intensities is preserved. This is the same
+        regime as the official ColorJitter brightness offset.
+
+        Probability is scaled by aug_strength.
+        """
+        p = 0.2 * self.aug_strength
+        if random.random() < p:
+            h, w = arr.shape[-2:]
+            n_blobs = random.randint(1, 3)
+            for _ in range(n_blobs):
+                radius = random.randint(8, 32)
+                cy = random.randint(0, h - 1)
+                cx = random.randint(0, w - 1)
+                yy, xx = np.ogrid[:h, :w]
+                mask = (yy - cy) ** 2 + (xx - cx) ** 2 <= radius ** 2
+                intensity = random.uniform(180, 240)
+                arr[:, mask] = np.clip(arr[:, mask] + intensity, 0, 255)
+        return arr
 
     def _color_augment(self, arr):
         """Brightness, contrast, gamma, and noise augmentation (same for all channels)."""

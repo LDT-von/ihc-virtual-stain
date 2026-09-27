@@ -54,12 +54,45 @@
         "Vimentin": null
       },
       "note": "Per-marker breakdown not captured; total 75.1128 confirmed by user"
+    },
+    {
+      "submission_zip": "fullplus_cd68_v6_rgb.zip",
+      "platform_score": 75.0463,
+      "platform_per_marker": {
+        "CD68": {
+          "SSIM": 0.773,
+          "PSNR": 28.1
+        },
+        "CD45RO": {
+          "SSIM": 0.894,
+          "PSNR": 26.533
+        },
+        "HLA-DR": {
+          "SSIM": 0.85,
+          "PSNR": 25.484
+        },
+        "Vimentin": {
+          "SSIM": 0.865,
+          "PSNR": 25.958
+        }
+      },
+      "submitted_at": "2026-09-27",
+      "local_holdout": {
+        "ROI078_SSIM": 0.8139,
+        "ROI078_PSNR": 24.214,
+        "note": "Local highest ever; platform third"
+      }
     }
   ],
   "current_best": {
     "submission_zip": "fullplus_cd68_v3_rgb_FIXED.zip",
     "platform_score": 75.1128
   },
+  "history_ranking": [
+    {"rank": 1, "zip": "fullplus_cd68_v3_rgb_FIXED.zip", "score": 75.1128},
+    {"rank": 2, "zip": "submission_w96_expanded_tta4_semi.zip", "score": 75.0876},
+    {"rank": 3, "zip": "fullplus_cd68_v6_rgb.zip", "score": 75.0463}
+  ],
   "target": {
     "score": 78.3845,
     "per_marker": {

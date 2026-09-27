@@ -1,6 +1,17 @@
 # 比赛训练进展报告
 
-## 当前最佳：ultimate_w96_expanded/baseline (TTA=8, NoJPEG)
+## 平台最终成绩（截至 2026-09-27）
+
+| Rank | Submission | 平台分 | Local SSIM |
+|------|------------|------:|-----------:|
+| 1 | **v3** (fullplus_cd68_v3_rgb_FIXED.zip) | **75.1128** 🥇 | 0.7926 |
+| 2 | w96 expanded | 75.0876 | 0.7870 |
+| 3 | **v6** (fullplus_cd68_v6_rgb.zip) | **75.0463** 🥉 | 0.8139 |
+| 4 | v5 | 74.9364 | 0.8032 |
+| 5 | v4 (w48 refiner) | 74.6531 | 0.7968 |
+
+## 当前最佳：v6 in local, v3 in platform
+
 
 | 指标 | Val (2100 train) | Holdout (含污染) | ROI078 only (真实holdout) |
 |------|------------------|-------------------|---------------------------|

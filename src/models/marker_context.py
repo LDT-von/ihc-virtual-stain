@@ -7,6 +7,57 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from ..data.roi_manifest import MARKERS
+
+
+_DEFAULT_MARKER_WEIGHTS = {m: 1.0 for m in MARKERS}
+
+
+def get_marker_weights(cd68_weight=1.0):
+    """Return per-marker weight tensor following the canonical MARKERS order.
+
+    cd68_weight only boosts CD68; other markers remain at 1.0 by default. Values
+    >1.0 increase the relative contribution of a marker to the loss, forcing the
+    model to pay more attention to under-performing channels (typically CD68).
+    """
+    weights = dict(_DEFAULT_MARKER_WEIGHTS)
+    weights['CD68'] = float(cd68_weight)
+    return torch.tensor([weights[m] for m in MARKERS], dtype=torch.float32)
+
+
+def reconstruction_loss(pred, target, marker_weights=None):
+    """Per-marker weighted reconstruction loss.
+
+    Without marker_weights (legacy/eval path) this matches the original uniform
+    weighting so existing checkpoints keep evaluating identically. With
+    marker_weights, SSIM/L1/MSE/multi-scale terms become per-channel means that
+    are re-weighted by the provided vector, allowing CD68 to receive a larger
+    gradient when its SSIM lags behind the rest of the markers.
+    """
+    p, t = pred.float(), target.float()
+    if marker_weights is None:
+        # Uniform weighting (legacy behavior).
+        loss = 1 - local_ssim(p, t).mean() + .5 * F.l1_loss(p, t) + 2 * F.mse_loss(p, t)
+        for scale in (2, 4):
+            loss = loss + .1 * F.l1_loss(F.avg_pool2d(p, scale), F.avg_pool2d(t, scale))
+        return loss
+    w = marker_weights.to(dtype=p.dtype, device=p.device)
+    w_sum = w.sum()
+    ssim_per = 1 - local_ssim(p, t)  # (B,C)
+    weighted_ssim = (ssim_per * w).sum() / w_sum
+    l1_per = (p - t).abs().mean(dim=(-2, -1))  # (B,C)
+    weighted_l1 = (l1_per * w).sum() / w_sum
+    mse_per = ((p - t) ** 2).mean(dim=(-2, -1))  # (B,C)
+    weighted_mse = (mse_per * w).sum() / w_sum
+    loss = weighted_ssim + .5 * weighted_l1 + 2 * weighted_mse
+    # Supervision uses true marker targets only, never DAPI as a surrogate label.
+    for scale in (2, 4):
+        pl = F.avg_pool2d(p, scale)
+        tl = F.avg_pool2d(t, scale)
+        l1_scale = ((pl - tl).abs().mean(dim=(-2, -1)) * w).sum() / w_sum
+        loss = loss + .1 * l1_scale
+    return loss
+
 
 class ChannelNorm(nn.Module):
     def __init__(self, channels):
@@ -114,10 +165,33 @@ def local_ssim(pred, target):
         return score.mean(dim=(-2, -1))
 
 
-def reconstruction_loss(pred, target):
+def reconstruction_loss(pred, target, marker_weights=None):
+    """Per-marker weighted reconstruction loss.
+
+    Without marker_weights (legacy/eval path) this matches the original uniform
+    weighting so existing checkpoints keep evaluating identically. With
+    marker_weights, SSIM/L1/MSE/multi-scale terms become per-channel means that
+    are re-weighted by the provided vector, allowing CD68 to receive a larger
+    gradient when its SSIM lags behind the rest of the markers.
+    """
     p, t = pred.float(), target.float()
-    loss = 1-local_ssim(p, t).mean() + .5*F.l1_loss(p, t) + 2*F.mse_loss(p, t)
-    # Supervision uses true marker targets only, never DAPI as a surrogate label.
+    if marker_weights is None:
+        loss = 1 - local_ssim(p, t).mean() + .5 * F.l1_loss(p, t) + 2 * F.mse_loss(p, t)
+        for scale in (2, 4):
+            loss = loss + .1 * F.l1_loss(F.avg_pool2d(p, scale), F.avg_pool2d(t, scale))
+        return loss
+    w = marker_weights.to(dtype=p.dtype, device=p.device)
+    w_sum = w.sum()
+    ssim_per = 1 - local_ssim(p, t)
+    weighted_ssim = (ssim_per * w).sum() / w_sum
+    l1_per = (p - t).abs().mean(dim=(-2, -1))
+    weighted_l1 = (l1_per * w).sum() / w_sum
+    mse_per = ((p - t) ** 2).mean(dim=(-2, -1))
+    weighted_mse = (mse_per * w).sum() / w_sum
+    loss = weighted_ssim + .5 * weighted_l1 + 2 * weighted_mse
     for scale in (2, 4):
-        loss = loss + .1*F.l1_loss(F.avg_pool2d(p, scale), F.avg_pool2d(t, scale))
+        pl = F.avg_pool2d(p, scale)
+        tl = F.avg_pool2d(t, scale)
+        l1_scale = ((pl - tl).abs().mean(dim=(-2, -1)) * w).sum() / w_sum
+        loss = loss + .1 * l1_scale
     return loss

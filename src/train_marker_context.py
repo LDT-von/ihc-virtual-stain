@@ -22,7 +22,8 @@ from torch.utils.data import DataLoader
 from .data.roi_manifest import (MARKERS, PairedMarkers, build_manifest, digest,
                                 read_gray, roi_id, selected_names, validate_manifest,
                                 SEMIFINAL_SEED)
-from .models.marker_context import MarkerContextNet, local_ssim, reconstruction_loss
+from .models.marker_context import (MarkerContextNet, get_marker_weights, local_ssim,
+                                    reconstruction_loss)
 from .models.marker_specific import MarkerSpecificNet
 from .models.anchored_ihc import AnchoredIHC
 
@@ -161,8 +162,8 @@ def write_json(path, value):
     Path(path).write_text(json.dumps(value, indent=2, ensure_ascii=False), encoding='utf-8')
 
 
-def make_loader(root, names, batch, augment=False, cache=True):  # batch positional
-    ds = PairedMarkers(root, names, augment=augment, cache=cache)
+def make_loader(root, names, batch, augment=False, cache=True, aug_strength=1.0):  # batch positional
+    ds = PairedMarkers(root, names, augment=augment, cache=cache, aug_strength=aug_strength)
     return DataLoader(ds, batch_size=batch, shuffle=augment, num_workers=0,
                       pin_memory=torch.cuda.is_available(),
                       generator=torch.Generator().manual_seed(SEMIFINAL_SEED))
@@ -241,6 +242,8 @@ def train(args):
     train_loader = make_loader(args.data_root, train_names, args.batch_size, True, not args.no_cache)
     val_loader = make_loader(args.data_root, val_names, args.batch_size, cache=not args.no_cache) if val_names else None
     model = build_reconstruction_model(model_config).to(device)
+    cd68_weight = float(getattr(args, 'cd68_weight', 1.0))
+    marker_weights = get_marker_weights(cd68_weight=cd68_weight) if cd68_weight != 1.0 else None
     if baseline is not None:
         model.baseline.load_state_dict(baseline['ema'], strict=True)
     ema = copy.deepcopy(model).eval().requires_grad_(False)
@@ -251,6 +254,7 @@ def train(args):
            'split_sha256': manifest['sha256'], 'train_names': train_names, 'val_names': val_names,
            'environment': environment(), 'parameters': sum(p.numel() for p in model.parameters()),
            'protocol': protocol,
+           'marker_weights': {m: float(w) for m, w in zip(MARKERS, get_marker_weights(cd68_weight).tolist())},
            'selection': 'fixed final epoch; no validation' if full_data else
                         'maximum validation mean SSIM; PSNR reported separately; not an official composite score'}
     if baseline_provenance is not None:
@@ -308,7 +312,7 @@ def train(args):
             optimizer.zero_grad(set_to_none=True)
             with amp_context(device):
                 pred = model(x)
-            loss = reconstruction_loss(pred, y)
+            loss = reconstruction_loss(pred, y, marker_weights)
             if not torch.isfinite(loss):
                 raise FloatingPointError(f'Non-finite loss epoch={epoch} step={batch_index}')
             scaler.scale(loss).backward()
@@ -476,6 +480,8 @@ def main():
             p.add_argument('--width', type=int, default=16)
             p.add_argument('--epochs', type=int, default=20)
             p.add_argument('--lr', type=float, default=5e-4)
+            p.add_argument('--cd68-weight', type=float, default=1.0,
+                           help='Per-marker loss weight on CD68 (>1.0 boosts CD68; 1.0 = uniform)')
             p.add_argument('--no-context', action='store_true')
             p.add_argument('--no-cache', action='store_true')
             p.add_argument('--train-limit', type=int, default=0)

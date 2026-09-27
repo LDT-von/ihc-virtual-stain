@@ -1,117 +1,131 @@
-"""对每个 marker 试多种 ensemble 组合，找最佳"""
-import sys
+"""Try several ensemble configs and pick the best on holdout."""
+import argparse, glob, json, os, sys, time, zipfile
 from pathlib import Path
+
+import numpy as np
 import torch
+from PIL import Image
 from torch.utils.data import DataLoader
-from skimage.metrics import structural_similarity as sk_skim
 
-ROOT = Path(r'E:\aic\ihc-virtual-stain')
-sys.path.insert(0, str(ROOT))
-from src.data.dataset import DAPItoIHCDataset
-from src.metrics.ssim_psnr import to_uint8
-from src.models.pix2pix_gan import build_pix2pix_model
+sys.path.insert(0, r'E:\aic\final-ihc\74.6531\code')
+sys.path.insert(0, r'E:\aic\final-ihc\74.6531\code\src')
+from src.data.roi_manifest import MARKERS, PairedMarkers
+from src.models.marker_context import MarkerContextNet, local_ssim
 
-device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-data_root = Path(r'E:/aic/ihc-virtual-stain/初赛数据集（包含训练集和测试集输入）/初赛数据集（包含训练集和测试集输入）')
-
-
-def avg_sds(state_dicts):
-    avg = {}
-    for k in state_dicts[0].keys():
-        if state_dicts[0][k].dtype.is_floating_point:
-            avg[k] = sum(sd[k].float() for sd in state_dicts) / len(state_dicts)
-        else:
-            avg[k] = state_dicts[-1][k]
-    return avg
+CKPT_PATHS = {
+    'v6': r'E:\aic\final-ihc\checkpoints\fullplus_cd68_v6\final.pt',
+    'v5': r'E:\aic\final-ihc\checkpoints\fullplus_cd68_v5\final.pt',
+    'v4': r'E:\aic\final-ihc\checkpoints\fullplus_cd68_v4\final.pt',
+}
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+_candidates = glob.glob(r'E:\aic\复赛数据集(包括训练集和测试集输入)')
+DATA_ROOT = Path(_candidates[0])
+MANIFEST = Path(r'E:\aic\final-ihc\configs\roi_split_semifinal_2026_expanded.json')
 
 
-def eval_model(model, marker, bs=8):
-    ds = DAPItoIHCDataset(root=data_root, marker=marker, split='val',
-                          patch_size=256, augment=False)
-    loader = DataLoader(ds, batch_size=bs, shuffle=False, num_workers=0)
-    ssim_sum = 0.0
-    n = 0
-    with torch.inference_mode():
-        for batch in loader:
-            dapi = batch['dapi'].to(device)
-            real = batch['ihc'].to(device)
-            fake = model.generator(dapi, dapi)
-            for i in range(fake.shape[0]):
-                p = to_uint8(fake[i].cpu())
-                t = to_uint8(real[i].cpu())
-                ssim_sum += sk_skim(p, t, channel_axis=-1, data_range=255)
-            n += fake.shape[0]
-    return ssim_sum / n
+def load_model(p):
+    ck = torch.load(p, map_location='cpu', weights_only=False)
+    cfg = ck['run']['model_config']
+    m = MarkerContextNet(width=cfg['width'], markers=cfg['markers'], context=cfg.get('context', True))
+    m.load_state_dict(ck.get('ema', ck['model']), strict=True)
+    m.eval().to(DEVICE)
+    return m
 
 
-def test_combo(marker, ckpt_dir, epochs_list):
-    cd = ROOT / 'checkpoints' / ckpt_dir
-    sds = []
-    for ep in epochs_list:
-        ck = torch.load(cd / f'{ep}.pt', map_location='cpu', weights_only=False)
-        sds.append(ck['model'])
-    avg = avg_sds(sds)
-    m = build_pix2pix_model(3, 3, 3, 64).to(device)
-    m.load_state_dict(avg)
-    m.eval()
-    s = eval_model(m, marker)
-    del m
-    torch.cuda.empty_cache()
-    return s
+@torch.no_grad()
+def predict_tta(model, x, tta=4):
+    variants = {1: [(0, False)], 4: [(0, False), (0, True), (2, False), (2, True)],
+                8: [(k, f) for k in range(4) for f in (False, True)]}[tta]
+    out = None
+    for k, f in variants:
+        xi = torch.rot90(x, k, (-2, -1))
+        if f: xi = xi.flip(-1)
+        yi = model(xi).float()
+        if f: yi = yi.flip(-1)
+        yi = torch.rot90(yi, -k, (-2, -1))
+        out = yi if out is None else out + yi
+    return out / len(variants)
 
 
-# CD45RO - test various combos
-print('=== CD45RO Ensembles ===')
-cd = 'pix2pix_v7_CD45RO_1789200177'
-combos = [
-    ['best'],
-    ['epoch57'],
-    ['epoch55', 'epoch57'],
-    ['epoch56', 'epoch57', 'epoch58'],
-    ['epoch57', 'epoch58', 'epoch59'],
-    ['epoch55', 'epoch56', 'epoch57', 'epoch58', 'epoch59'],
-    ['best', 'epoch57'],
-    ['best', 'epoch55', 'epoch57'],
-    ['best', 'epoch57', 'epoch59'],
-    ['epoch53', 'epoch55', 'epoch57', 'epoch59'],
-    ['epoch51', 'epoch53', 'epoch55', 'epoch57', 'epoch59'],
-]
-results = []
-for c in combos:
-    try:
-        s = test_combo('CD45RO', cd, c)
-        print(f'  {c}: {s:.4f}')
-        results.append((c, s))
-    except Exception as e:
-        print(f'  {c}: ERROR {e}')
+def main():
+    manifest = json.loads(MANIFEST.read_text(encoding='utf-8'))
+    names = manifest['splits']['holdout']
+    print(f'[info] holdout samples: {len(names)}')
+    ds = PairedMarkers(DATA_ROOT, names, augment=False, cache=True)
+    loader = DataLoader(ds, batch_size=8, shuffle=False, num_workers=2)
 
-print('\n=== CD45RO sorted ===')
-for c, s in sorted(results, key=lambda x: -x[1])[:5]:
-    print(f'  {c}: {s:.4f}')
+    print('[info] loading models...')
+    models = {tag: load_model(p) for tag, p in CKPT_PATHS.items()}
 
-print('\n=== Vimentin Ensembles ===')
-cd = 'pix2pix_v7_Vimentin_1789200192'
-combos = [
-    ['best'],
-    ['epoch60'],
-    ['epoch58', 'epoch60'],
-    ['epoch60', 'epoch62'],
-    ['epoch58', 'epoch60', 'epoch62'],
-    ['epoch60', 'epoch62', 'epoch64'],
-    ['best', 'epoch60'],
-    ['best', 'epoch60', 'epoch62'],
-    ['best', 'epoch60', 'epoch64'],
-    ['epoch55', 'epoch60', 'epoch64'],
-]
-results = []
-for c in combos:
-    try:
-        s = test_combo('Vimentin', cd, c)
-        print(f'  {c}: {s:.4f}')
-        results.append((c, s))
-    except Exception as e:
-        print(f'  {c}: ERROR {e}')
+    # Collect predictions per tag, per sample, per marker
+    all_preds = {tag: [] for tag in CKPT_PATHS}  # each is a list of (4, H, W)
+    all_targets = []
+    all_names = []
+    t0 = time.time()
+    for batch_idx, (x, y, names_) in enumerate(loader):
+        x = x.to(DEVICE); y = y.to(DEVICE)
+        for tag, m in models.items():
+            yp = predict_tta(m, x, 4).cpu()
+            for i in range(x.size(0)):
+                all_preds[tag].append(yp[i])
+        for i in range(x.size(0)):
+            all_targets.append(y[i].cpu())
+            all_names.append(names_[i])
+        if batch_idx % 5 == 0:
+            print(f'  [batch {batch_idx}] elapsed={time.time()-t0:.1f}s')
+    print(f'[info] preds ready, {len(all_names)} samples')
 
-print('\n=== Vimentin sorted ===')
-for c, s in sorted(results, key=lambda x: -x[1])[:5]:
-    print(f'  {c}: {s:.4f}')
+    # Stack
+    P = {tag: torch.stack(all_preds[tag]) for tag in CKPT_PATHS}
+    T = torch.stack(all_targets)
+
+    def evaluate(combo):
+        # combo: dict of tag -> weight (will be normalized)
+        s = sum(combo.values()); combo = {k: v/s for k, v in combo.items()}
+        ens = sum(P[tag] * w for tag, w in combo.items())
+        ssim_per = {m: [] for m in MARKERS}; psnr_per = {m: [] for m in MARKERS}
+        for i in range(len(all_names)):
+            for mi, mk in enumerate(MARKERS):
+                pi = ens[i, mi:mi+1].clamp(0,1)
+                ti = T[i, mi:mi+1]
+                with torch.autocast(device_type=DEVICE.type, enabled=False):
+                    ssim_per[mk].append(local_ssim(pi.unsqueeze(0).float(), ti.unsqueeze(0).float()).mean().item())
+                mse = ((pi-ti)**2).mean().item()
+                psnr_per[mk].append(10*np.log10(1.0/max(mse,1e-12)))
+        ssim_mean = np.mean([np.mean(v) for v in ssim_per.values()])
+        psnr_mean = np.mean([np.mean(v) for v in psnr_per.values()])
+        return ssim_mean, psnr_mean, ssim_per, psnr_per
+
+    configs = [
+        {'v6': 1.0},
+        {'v5': 1.0},
+        {'v4': 1.0},
+        {'v6': 0.5, 'v5': 0.5},
+        {'v6': 0.6, 'v5': 0.4},
+        {'v6': 0.7, 'v5': 0.3},
+        {'v6': 0.8, 'v5': 0.2},
+        {'v6': 0.5, 'v4': 0.5},
+        {'v6': 0.6, 'v4': 0.4},
+        {'v6': 0.5, 'v5': 0.3, 'v4': 0.2},
+        {'v6': 0.4, 'v5': 0.3, 'v4': 0.3},
+        {'v6': 0.6, 'v5': 0.3, 'v4': 0.1},
+        {'v6': 0.7, 'v5': 0.2, 'v4': 0.1},
+    ]
+    print()
+    print('=== Ensemble comparison ===')
+    print(f'{"config":40s}  {"SSIM":>8s}  {"PSNR":>8s}')
+    best = (0, None, None)
+    for cfg in configs:
+        sm, pm, _, _ = evaluate(cfg)
+        cstr = '+'.join(f'{k}*{v}' for k,v in cfg.items())
+        print(f'{cstr:40s}  {sm:.4f}  {pm:.3f}')
+        if sm > best[0]:
+            best = (sm, cfg, pm)
+
+    print()
+    print(f'BEST: {best[1]}  SSIM={best[0]:.4f}  PSNR={best[2]:.3f}')
+    return best, P, T, all_names
+
+
+if __name__ == '__main__':
+    main()
