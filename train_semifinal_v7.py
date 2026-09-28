@@ -65,7 +65,7 @@ def make_folds(names, folds, seed):
 
 
 def recipe_from_args(args):
-    return {
+    recipe = {
         'architecture': args.architecture,
         'width': args.width,
         'augmentation': args.augmentation,
@@ -81,6 +81,14 @@ def recipe_from_args(args):
         'folds': args.folds,
         'seed': args.seed,
     }
+    if args.architecture == 'prototype_marker':
+        recipe.update({
+            'num_shared_prototypes': args.num_shared_prototypes,
+            'num_task_prototypes': args.num_task_prototypes,
+            'prototype_temperature': args.prototype_temperature,
+            'prototype_diversity_weight': args.prototype_diversity_weight,
+        })
+    return recipe
 
 
 def make_training_loader(args, names, device):
@@ -125,6 +133,7 @@ def source_hashes():
         'src/data/roi_manifest.py',
         'src/models/marker_context.py',
         'src/models/marker_specific.py',
+        'src/models/prototype_marker.py',
         'src/train_marker_context.py',
     )
     return {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
@@ -171,6 +180,15 @@ def fit(args):
     if (not math.isfinite(args.cd68_weight) or args.cd68_weight <= 0
             or args.width < 4 or args.width % 4):
         raise ValueError('cd68 weight must be positive; width must be a multiple of 4')
+    if args.architecture == 'prototype_marker':
+        if args.num_shared_prototypes < 1 or args.num_task_prototypes < 1:
+            raise ValueError('Prototype counts must be positive')
+        if (not math.isfinite(args.prototype_temperature)
+                or args.prototype_temperature <= 0):
+            raise ValueError('Prototype temperature must be finite and positive')
+        if (not math.isfinite(args.prototype_diversity_weight)
+                or args.prototype_diversity_weight < 0):
+            raise ValueError('Prototype diversity weight must be finite and nonnegative')
     if not (0 <= args.warmup_epochs < args.epochs) or args.eval_every < 1:
         raise ValueError('Invalid warmup/evaluation interval')
 
@@ -231,6 +249,12 @@ def fit(args):
     model_config = {'width': args.width, 'markers': len(MARKERS), 'context': True}
     if args.architecture != 'context':
         model_config['architecture'] = args.architecture
+    if args.architecture == 'prototype_marker':
+        model_config.update({
+            'num_shared_prototypes': args.num_shared_prototypes,
+            'num_task_prototypes': args.num_task_prototypes,
+            'temperature': args.prototype_temperature,
+        })
     model = build_reconstruction_model(model_config).to(device)
     ema = copy.deepcopy(model).eval().requires_grad_(False)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
@@ -308,7 +332,9 @@ def fit(args):
         np.random.seed(args.seed + epoch)
         train_loader.dataset.aug_strength = augmentation_strength(args, epoch)
         model.train()
-        t0, total_loss, count = time.perf_counter(), 0.0, 0
+        t0, total_loss, total_reconstruction, total_diversity, count = (
+            time.perf_counter(), 0.0, 0.0, 0.0, 0
+        )
         for batch_index, (x, y, _) in enumerate(train_loader):
             lr = learning_rate(args, epoch, batch_index / len(train_loader))
             for group in optimizer.param_groups:
@@ -318,7 +344,11 @@ def fit(args):
             optimizer.zero_grad(set_to_none=True)
             with amp_context(device):
                 pred = model(x)
-            loss = reconstruction_loss(pred, y, weights, args.loss)
+            data_loss = reconstruction_loss(pred, y, weights, args.loss)
+            diversity = (model.prototype_diversity_loss()
+                         if args.architecture == 'prototype_marker' else None)
+            loss = (data_loss + args.prototype_diversity_weight * diversity
+                    if diversity is not None else data_loss)
             if not torch.isfinite(loss):
                 raise FloatingPointError(f'Non-finite loss at epoch {epoch + 1}')
             scaler.scale(loss).backward()
@@ -334,6 +364,9 @@ def fit(args):
                 for ema_param, param in zip(ema.parameters(), model.parameters()):
                     ema_param.lerp_(param, 1 - decay)
             total_loss += float(loss.item()) * len(x)
+            total_reconstruction += float(data_loss.item()) * len(x)
+            if diversity is not None:
+                total_diversity += float(diversity.item()) * len(x)
             count += len(x)
 
         record = {
@@ -341,6 +374,9 @@ def fit(args):
             'aug_strength': train_loader.dataset.aug_strength,
             'seconds': time.perf_counter() - t0,
         }
+        if args.architecture == 'prototype_marker':
+            record['reconstruction_loss'] = total_reconstruction / count
+            record['prototype_diversity'] = total_diversity / count
         improved = False
         if val_loader is not None and ((epoch + 1) % args.eval_every == 0
                                         or epoch + 1 == stop_epochs):
@@ -503,9 +539,14 @@ def main():
     train.add_argument('--augmentation', choices=('legacy-v6', 'geometry', 'dapi-noise'),
                        default='geometry')
     train.add_argument('--loss', choices=('legacy-v6', 'normalized'), default='normalized')
-    train.add_argument('--architecture', choices=('context', 'marker_specific'),
-                       default='context')
+    train.add_argument('--architecture', choices=('context', 'marker_specific',
+                                                  'prototype_marker'),
+                        default='context')
     train.add_argument('--width', type=int, default=96)
+    train.add_argument('--num-shared-prototypes', type=int, default=8)
+    train.add_argument('--num-task-prototypes', type=int, default=4)
+    train.add_argument('--prototype-temperature', type=float, default=0.25)
+    train.add_argument('--prototype-diversity-weight', type=float, default=0.001)
     train.add_argument('--epochs', type=int, default=300,
                        help='Full learning-rate schedule; final refit stops at selected epoch')
     train.add_argument('--eval-every', type=int, default=50)

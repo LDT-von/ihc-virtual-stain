@@ -25,6 +25,7 @@ from .data.roi_manifest import (MARKERS, PairedMarkers, build_manifest, digest,
 from .models.marker_context import (MarkerContextNet, get_marker_weights, local_ssim,
                                     reconstruction_loss)
 from .models.marker_specific import MarkerSpecificNet
+from .models.prototype_marker import PrototypeMarkerNet
 from .models.anchored_ihc import AnchoredIHC
 
 OFFICIAL_JPEG_QUALITY = 100
@@ -35,6 +36,8 @@ def build_reconstruction_model(config):
     architecture = config.pop('architecture', 'context')
     if architecture == 'anchored':
         return AnchoredIHC(**config)
+    if architecture == 'prototype_marker':
+        return PrototypeMarkerNet(**config)
     if architecture not in ('context', 'marker_specific'):
         raise ValueError(f'Unsupported architecture: {architecture}')
     return (MarkerSpecificNet if architecture == 'marker_specific' else MarkerContextNet)(**config)

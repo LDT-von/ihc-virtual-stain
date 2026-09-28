@@ -40,6 +40,8 @@ def main():
     parser.add_argument("--baseline", required=True, help="Baseline selection JSON")
     parser.add_argument("--candidate", required=True, help="Candidate selection JSON")
     parser.add_argument("--seed", type=int, default=2026)
+    parser.add_argument("--require-matched-training", action="store_true",
+                        help="Reject training-setting differences when comparing architectures")
     args = parser.parse_args()
     baseline = read_selection(args.baseline)
     candidate = read_selection(args.candidate)
@@ -50,6 +52,14 @@ def main():
     for field in ("folds", "seed", "tta"):
         if baseline["recipe"][field] != candidate["recipe"][field]:
             raise ValueError(f"Different fold assignment or inference protocol: {field}")
+    if args.require_matched_training:
+        training_fields = (
+            "width", "augmentation", "loss", "cd68_weight", "batch_size", "lr",
+            "schedule_epochs", "warmup_epochs", "weaken_start_epoch", "eval_every",
+        )
+        for field in training_fields:
+            if baseline["recipe"].get(field) != candidate["recipe"].get(field):
+                raise ValueError(f"Unmatched training setting: {field}")
     rois = sorted(baseline["all_rois"])
     base = baseline["selected_metrics"]
     cand = candidate["selected_metrics"]
@@ -57,6 +67,7 @@ def main():
         raise ValueError("Different validation image count or marker set")
     report = {"baseline": str(Path(args.baseline).resolve()),
               "candidate": str(Path(args.candidate).resolve()),
+              "matched_training_required": args.require_matched_training,
               "roi_count": len(rois), "baseline_epoch": baseline["selected_epoch"],
               "candidate_epoch": candidate["selected_epoch"],
               "warning": "Development OOF evidence; recipe and epoch were selected on these ROIs."}
