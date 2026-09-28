@@ -5,7 +5,7 @@
 ## 已确认的问题
 
 1. 旧 V3/V6 把 manifest 的 train、val、holdout 合并训练，再用 ROI078 对比。ROI078 对它们不是独立 holdout。本地 V3→V6 SSIM 升高，平台分 75.1128→75.0463，不能用该本地分推断泛化。
-2. 旧 `PairedMarkers._gaussian_noise` 在输入数组仍为 `uint8` 时把负高斯噪声转成 `uint8`，会回绕；噪声和镜面亮斑还作用于四个目标 marker。代码错误已确认，分数影响尚未实测。
+2. V6 版 `PairedMarkers._gaussian_noise` 在输入数组仍为 `uint8` 时把负高斯噪声转成 `uint8`，会回绕；噪声和镜面亮斑还作用于四个目标 marker。更严重的是，无颜色变换、无平移、无噪声而有镜面亮斑时，`np.rot90`/翻转保留对缓存的视图，`_specular_highlight` 的原地赋值会永久修改缓存中的训练图像与标签。按默认强度，这条路径单次读取的近似概率是 `0.25 × 0.7 × 0.6 × 0.2 = 2.1%`；多轮训练会累积，实际受分支和随机数影响。代码错误已确认，分数影响尚未实测。
 3. 当前 75.2485 的 ALL-IN 文档写五模型，现有同名脚本却使用六个不同权重且只处理 ROI078。原提交 ZIP、权重和实际打包脚本不在此工作区，不能逐项归因。V6 的逐 marker 数字复制了另一提交，目标 78.3845 的逐 marker 数字不是官方分项。
 4. 当前训练集只有 17 个 ROI、每 ROI 140 patch。应按 ROI 分组评估；因缺少患者 ID，ROI 独立仍不等于患者独立。
 5. [官方赛题说明](https://www.aicomp.cn/wp-content/uploads/2026/05/6%E3%80%81%E5%9F%BA%E4%BA%8E%E8%99%9A%E6%8B%9F%E6%9F%93%E8%89%B2%E7%9A%84%E5%85%8D%E7%96%AB%E7%BB%84%E5%8C%96%E5%9B%BE%E5%83%8F%E7%94%9F%E6%88%90.pdf)在初赛阶段公布 `0.7 × SSIM + 0.3 × Normalize(PSNR)`；复赛沿用 SSIM、PSNR 和综合分，半决赛 test3 的归一化细节没有公布。半决赛综合分写为 `0.1 × test1 + 0.2 × test2 + 0.7 × test3`。需确认平台显示的 75.2485 是 test3 单项还是半决赛综合分。若是综合分且前两项不变，到 78.0000 需要 test3 约提高 `(78-75.2485)/0.7 = 3.93` 分；这是条件计算。
@@ -20,6 +20,23 @@
 - `marker_specific` 同时改变编码器/解码器深度与容量，是整体架构候选；若它提高，不能只归因于专用 decoder。
 
 OOF 指标用于配方与轮次选择，属于开发证据；官方盲测才检验泛化。
+
+## 两个新的只读诊断工具
+
+`audit_semifinal_augmentation.py` 用合成图或抽样真实图，在内存里重复读取旧增强和 V7 干净增强，报告缓存像素是否漂移。它不修改磁盘图像，也不估计平台涨分。可先运行无需数据的命令，再在数据机器上运行真实抽样：
+
+```powershell
+Set-Location E:\aic
+python .\audit_semifinal_augmentation.py
+python .\audit_semifinal_augmentation.py --data-root 'E:\aic\复赛数据集(包括训练集和测试集输入)' --manifest 'E:\aic\configs\roi_split_semifinal_2026_expanded.json' --samples 8 --draws 300
+```
+
+五折都跑完后，用 `compare_semifinal_v7.py` 按 ROI 对照配方。它报告各 marker 的平均差值、17 个 ROI 中改善的个数与按 ROI 重采样区间；这只是开发集证据，不能等同于平台分。若提升只集中在一两个 ROI，先检查图像和器官差异。
+
+```powershell
+python .\compare_semifinal_v7.py --baseline (Join-Path $Out 'legacy_selection.json') --candidate (Join-Path $Out 'geometry_selection.json')
+python .\compare_semifinal_v7.py --baseline (Join-Path $Out 'geometry_selection.json') --candidate (Join-Path $Out 'normalized_selection.json')
+```
 
 ## 用户运行命令（PowerShell；这里没有代跑）
 
