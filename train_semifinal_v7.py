@@ -22,6 +22,7 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader
 
 from src.data.paired_clean import CleanPairedMarkers
+from src.data.marker_subset import MarkerSubsetDataset
 from src.data.roi_manifest import MARKERS, PairedMarkers, SEMIFINAL_SEED, roi_id
 from src.models.marker_context import local_ssim
 from src.train_marker_context import (
@@ -67,6 +68,7 @@ def make_folds(names, folds, seed):
 def recipe_from_args(args):
     recipe = {
         'architecture': args.architecture,
+        'target_marker': args.target_marker,
         'width': args.width,
         'augmentation': args.augmentation,
         'loss': args.loss,
@@ -91,7 +93,7 @@ def recipe_from_args(args):
     return recipe
 
 
-def make_training_loader(args, names, device):
+def make_training_loader(args, names, device, marker_names):
     if args.augmentation == 'legacy-v6':
         dataset = PairedMarkers(args.data_root, names, augment=True, cache=not args.no_cache)
     else:
@@ -99,6 +101,8 @@ def make_training_loader(args, names, device):
             args.data_root, names, augment=True, cache=not args.no_cache,
             policy=args.augmentation,
         )
+    if tuple(marker_names) != MARKERS:
+        dataset = MarkerSubsetDataset(dataset, marker_names)
     generator = torch.Generator().manual_seed(args.seed)
     loader = DataLoader(
         dataset, batch_size=args.batch_size, shuffle=True, num_workers=0,
@@ -131,9 +135,11 @@ def source_hashes():
         'train_semifinal_v7.py',
         'src/data/paired_clean.py',
         'src/data/roi_manifest.py',
+        'src/data/marker_subset.py',
         'src/models/marker_context.py',
         'src/models/marker_specific.py',
         'src/models/prototype_marker.py',
+        'src/models/marker_nafnet.py',
         'src/train_marker_context.py',
     )
     return {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
@@ -174,6 +180,11 @@ def repair_history(path, checkpoint):
 
 def fit(args):
     seed_all(args.seed)
+    if args.width is None:
+        args.width = 32 if args.architecture == 'marker_nafnet' else 96
+    if args.target_marker is not None and args.architecture != 'marker_nafnet':
+        raise ValueError('--target-marker currently requires --architecture marker_nafnet')
+    active_markers = ((args.target_marker,) if args.target_marker else MARKERS)
     if (args.epochs < 1 or args.batch_size < 1
             or not math.isfinite(args.lr) or args.lr <= 0):
         raise ValueError('epochs, batch size and lr must be positive')
@@ -213,6 +224,7 @@ def fit(args):
         if (selection.get('kind') != 'semifinal_v7_cv_selection'
                 or selection.get('split_sha256') != manifest['sha256']
                 or selection.get('recipe') != recipe
+                or selection.get('markers') != list(active_markers)
                 or selection.get('all_rois') != all_rois
                 or selection.get('source_sha256') != source_hashes()
                 or selection.get('environment_source_sha256')
@@ -246,7 +258,9 @@ def fit(args):
     output.mkdir(parents=True, exist_ok=True)
 
     device = torch.device(args.device)
-    model_config = {'width': args.width, 'markers': len(MARKERS), 'context': True}
+    model_config = {'width': args.width, 'markers': len(active_markers)}
+    if args.architecture != 'marker_nafnet':
+        model_config['context'] = True
     if args.architecture != 'context':
         model_config['architecture'] = args.architecture
     if args.architecture == 'prototype_marker':
@@ -262,12 +276,14 @@ def fit(args):
         'cuda', enabled=device.type == 'cuda' and not torch.cuda.is_bf16_supported()
     )
     weights = torch.tensor([args.cd68_weight if marker == 'CD68' else 1.0
-                            for marker in MARKERS])
-    train_loader = make_training_loader(args, train_names, device)
+                            for marker in active_markers])
+    train_loader = make_training_loader(args, train_names, device, active_markers)
     val_loader = None
     if val_names:
         val_dataset = PairedMarkers(args.data_root, val_names, augment=False,
                                     cache=not args.no_cache)
+        if active_markers != MARKERS:
+            val_dataset = MarkerSubsetDataset(val_dataset, active_markers)
         val_loader = DataLoader(
             val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=0,
             pin_memory=device.type == 'cuda',
@@ -276,7 +292,7 @@ def fit(args):
     run = {
         'kind': f'semifinal_v7_{args.stage}',
         'protocol': 'ROI out-of-fold development' if val_names else 'locked full-data refit',
-        'markers': list(MARKERS), 'model_config': model_config,
+        'markers': list(active_markers), 'model_config': model_config,
         'split_sha256': manifest['sha256'], 'all_rois': all_rois,
         'fold_assignment': folds, 'fold': args.fold,
         'train_names': train_names, 'val_names': val_names,
@@ -332,8 +348,8 @@ def fit(args):
         np.random.seed(args.seed + epoch)
         train_loader.dataset.aug_strength = augmentation_strength(args, epoch)
         model.train()
-        t0, total_loss, total_reconstruction, total_diversity, count = (
-            time.perf_counter(), 0.0, 0.0, 0.0, 0
+        t0, total_loss, total_reconstruction, total_diversity, count, skipped = (
+            time.perf_counter(), 0.0, 0.0, 0.0, 0, 0
         )
         for batch_index, (x, y, _) in enumerate(train_loader):
             lr = learning_rate(args, epoch, batch_index / len(train_loader))
@@ -353,9 +369,16 @@ def fit(args):
                 raise FloatingPointError(f'Non-finite loss at epoch {epoch + 1}')
             scaler.scale(loss).backward()
             scaler.unscale_(optimizer)
-            norm = nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            norm = nn.utils.clip_grad_norm_(model.parameters(), 1.0,
+                                            error_if_nonfinite=not scaler.is_enabled())
             if not torch.isfinite(norm):
-                raise FloatingPointError(f'Non-finite gradients at epoch {epoch + 1}')
+                # GradScaler skips this FP16 update and reduces its scale.
+                scaler.step(optimizer)
+                scaler.update()
+                skipped += 1
+                if skipped > 10:
+                    raise FloatingPointError('Repeated FP16 overflow; use BF16 or a smaller batch')
+                continue
             scaler.step(optimizer)
             scaler.update()
             steps += 1
@@ -369,9 +392,12 @@ def fit(args):
                 total_diversity += float(diversity.item()) * len(x)
             count += len(x)
 
+        if count == 0:
+            raise FloatingPointError(f'No successful optimizer updates in epoch {epoch + 1}')
         record = {
             'epoch': epoch + 1, 'loss': total_loss / count, 'lr': lr,
             'aug_strength': train_loader.dataset.aug_strength,
+            'skipped_overflow_batches': skipped,
             'seconds': time.perf_counter() - t0,
         }
         if args.architecture == 'prototype_marker':
@@ -380,7 +406,8 @@ def fit(args):
         improved = False
         if val_loader is not None and ((epoch + 1) % args.eval_every == 0
                                         or epoch + 1 == stop_epochs):
-            metrics = evaluate(ema, val_loader, device, tta=args.tta)
+            metrics = evaluate(ema, val_loader, device, tta=args.tta,
+                               marker_names=active_markers)
             record['validation'] = compact(metrics)
             improved = metrics['ssim'] > best_ssim
             if improved:
@@ -436,7 +463,8 @@ def summarize(args):
     seen_rois = set()
     common_epochs = None
     for directory, run, history in runs:
-        if (run['recipe'] != first['recipe'] or run['split_sha256'] != first['split_sha256']
+        if (run['recipe'] != first['recipe'] or run['markers'] != first['markers']
+                or run['split_sha256'] != first['split_sha256']
                 or run['all_rois'] != first['all_rois']
                 or run['fold_assignment'] != first['fold_assignment']
                 or run['source_sha256'] != first['source_sha256']
@@ -479,7 +507,7 @@ def summarize(args):
                             for value in fold_values) / count
                 for metric in ('ssim', 'psnr')
             }
-            for marker in MARKERS
+            for marker in first['markers']
         }
         roi_metrics = {}
         for value in fold_values:
@@ -496,6 +524,7 @@ def summarize(args):
             raise ValueError(f'Missing selected-epoch EMA checkpoint: {directory}')
     selection = {
         'kind': 'semifinal_v7_cv_selection',
+        'markers': first['markers'],
         'split_sha256': first['split_sha256'], 'all_rois': first['all_rois'],
         'source_sha256': first['source_sha256'],
         'environment_source_sha256': first['environment']['source_sha256'],
@@ -540,9 +569,12 @@ def main():
                        default='geometry')
     train.add_argument('--loss', choices=('legacy-v6', 'normalized'), default='normalized')
     train.add_argument('--architecture', choices=('context', 'marker_specific',
-                                                  'prototype_marker'),
+                                                  'prototype_marker', 'marker_nafnet'),
                         default='context')
-    train.add_argument('--width', type=int, default=96)
+    train.add_argument('--target-marker', choices=MARKERS,
+                       help='Train one marker (marker_nafnet only); default is all four')
+    train.add_argument('--width', type=int,
+                       help='Default: 32 for marker_nafnet, 96 otherwise')
     train.add_argument('--num-shared-prototypes', type=int, default=8)
     train.add_argument('--num-task-prototypes', type=int, default=4)
     train.add_argument('--prototype-temperature', type=float, default=0.25)

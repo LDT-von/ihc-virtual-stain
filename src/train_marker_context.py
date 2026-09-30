@@ -22,10 +22,13 @@ from torch.utils.data import DataLoader
 from .data.roi_manifest import (MARKERS, PairedMarkers, build_manifest, digest,
                                 read_gray, roi_id, selected_names, validate_manifest,
                                 SEMIFINAL_SEED)
+from .data.marker_subset import MarkerSubsetDataset
+from .data.paired_clean import CleanPairedMarkers
 from .models.marker_context import (MarkerContextNet, get_marker_weights, local_ssim,
                                     reconstruction_loss)
 from .models.marker_specific import MarkerSpecificNet
 from .models.prototype_marker import PrototypeMarkerNet
+from .models.marker_nafnet import MarkerNAFNet
 from .models.anchored_ihc import AnchoredIHC
 
 OFFICIAL_JPEG_QUALITY = 100
@@ -38,6 +41,8 @@ def build_reconstruction_model(config):
         return AnchoredIHC(**config)
     if architecture == 'prototype_marker':
         return PrototypeMarkerNet(**config)
+    if architecture == 'marker_nafnet':
+        return MarkerNAFNet(**config)
     if architecture not in ('context', 'marker_specific'):
         raise ValueError(f'Unsupported architecture: {architecture}')
     return (MarkerSpecificNet if architecture == 'marker_specific' else MarkerContextNet)(**config)
@@ -87,23 +92,36 @@ def predict(model, x, tta=1):
     return result.div_(len(variants[tta]))
 
 
+def encode_rgb_jpeg(channel):
+    """Serialize one grayscale prediction exactly as a submitted RGB JPEG."""
+    rgb = np.repeat(channel[:, :, None], 3, axis=2)
+    buffer = io.BytesIO()
+    Image.fromarray(rgb).save(buffer, format='JPEG', quality=OFFICIAL_JPEG_QUALITY,
+                              subsampling=0, optimize=False)
+    return buffer.getvalue()
+
+
 def jpeg_roundtrip(pred):
+    if not torch.isfinite(pred).all().item():
+        raise ValueError('Non-finite model output')
     if pred.min().item() < 0 or pred.max().item() > 1:
         raise ValueError('Model output is outside the official [0,1] range')
     images = pred.detach().cpu().mul(255).round().to(torch.uint8).numpy()
     for image in images:
         for channel in image:
-            buffer = io.BytesIO()
-            Image.fromarray(channel).save(buffer, format='JPEG', quality=OFFICIAL_JPEG_QUALITY,
-                                          subsampling=0, optimize=False)
-            buffer.seek(0)
-            with Image.open(buffer) as im:
-                channel[:] = np.asarray(im)
+            with Image.open(io.BytesIO(encode_rgb_jpeg(channel))) as im:
+                rgb = np.asarray(im.convert('RGB'))
+            if not np.array_equal(rgb[..., 0], rgb[..., 1]) or not np.array_equal(rgb[..., 0], rgb[..., 2]):
+                raise ValueError('RGB JPEG no longer decodes to identical marker channels')
+            channel[:] = rgb[..., 0]
     return torch.from_numpy(images.copy()).to(pred.device).float()/255
 
 
 @torch.no_grad()
-def evaluate(model, loader, device, tta=1):
+def evaluate(model, loader, device, tta=1, marker_names=MARKERS):
+    marker_names = tuple(marker_names)
+    if not marker_names or len(set(marker_names)) != len(marker_names):
+        raise ValueError('Evaluation requires a nonempty marker list')
     model.eval()
     rows = []
     start = time.perf_counter()
@@ -111,6 +129,8 @@ def evaluate(model, loader, device, tta=1):
         x, y = x.to(device), y.to(device)
         with amp_context(device):
             p = predict(model, x, tta)
+        if p.shape != y.shape or p.shape[1] != len(marker_names):
+            raise ValueError('Model, target and marker channel counts differ')
         p = jpeg_roundtrip(p)
         scores = local_ssim(p, y).cpu().numpy()
         errors = (p-y).square().mean((-2, -1)).cpu().numpy()
@@ -120,7 +140,8 @@ def evaluate(model, loader, device, tta=1):
     if not rows:
         raise ValueError('Empty evaluation set')
     marker = {m: {'ssim': float(np.mean([r['ssim'][i] for r in rows])),
-                  'psnr': float(np.mean([r['psnr'][i] for r in rows]))} for i, m in enumerate(MARKERS)}
+                  'psnr': float(np.mean([r['psnr'][i] for r in rows]))}
+              for i, m in enumerate(marker_names)}
     per_roi = {r: {k: float(np.mean([row[k] for row in rows if row['roi'] == r])) for k in ('ssim','psnr')}
                for r in sorted({row['roi'] for row in rows})}
     return {'count': len(rows), 'ssim': float(np.mean([m['ssim'] for m in marker.values()])),
@@ -155,7 +176,11 @@ def environment():
     sources = [Path(__file__), Path(__file__).parent/'models'/'marker_context.py',
                Path(__file__).parent/'models'/'marker_specific.py',
                Path(__file__).parent/'models'/'anchored_ihc.py',
-               Path(__file__).parent/'data'/'roi_manifest.py']
+               Path(__file__).parent/'models'/'prototype_marker.py',
+               Path(__file__).parent/'models'/'marker_nafnet.py',
+               Path(__file__).parent/'data'/'roi_manifest.py',
+               Path(__file__).parent/'data'/'paired_clean.py',
+               Path(__file__).parent/'data'/'marker_subset.py']
     return {'python': sys.version, 'torch': str(torch.__version__), 'platform': platform.platform(),
             'device': torch.cuda.get_device_name() if torch.cuda.is_available() else 'cpu',
             'git_head': git, 'source_sha256': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}}
@@ -165,8 +190,14 @@ def write_json(path, value):
     Path(path).write_text(json.dumps(value, indent=2, ensure_ascii=False), encoding='utf-8')
 
 
-def make_loader(root, names, batch, augment=False, cache=True, aug_strength=1.0):  # batch positional
-    ds = PairedMarkers(root, names, augment=augment, cache=cache, aug_strength=aug_strength)
+def make_loader(root, names, batch, augment=False, cache=True, aug_strength=1.0,
+                marker_names=MARKERS):  # batch positional
+    # Keep training targets and cached source pixels intact. Historical noisy
+    # augmentation remains available only through the explicit legacy V7 arm.
+    reader = CleanPairedMarkers if augment else PairedMarkers
+    ds = reader(root, names, augment=augment, cache=cache, aug_strength=aug_strength)
+    if tuple(marker_names) != MARKERS:
+        ds = MarkerSubsetDataset(ds, marker_names)
     return DataLoader(ds, batch_size=batch, shuffle=augment, num_workers=0,
                       pin_memory=torch.cuda.is_available(),
                       generator=torch.Generator().manual_seed(SEMIFINAL_SEED))
@@ -201,7 +232,11 @@ def train(args):
     for source in (Path(__file__), Path(__file__).parent/'models'/'marker_context.py',
                    Path(__file__).parent/'models'/'marker_specific.py',
                    Path(__file__).parent/'models'/'anchored_ihc.py',
-                   Path(__file__).parent/'data'/'roi_manifest.py'):
+                   Path(__file__).parent/'models'/'prototype_marker.py',
+                   Path(__file__).parent/'models'/'marker_nafnet.py',
+                   Path(__file__).parent/'data'/'roi_manifest.py',
+                   Path(__file__).parent/'data'/'paired_clean.py',
+                   Path(__file__).parent/'data'/'marker_subset.py'):
         if not (source_dir/source.name).exists():
             shutil.copy2(source, source_dir/source.name)
     train_names = (sorted(sum(manifest['splits'].values(), [])) if full_data else
@@ -257,6 +292,7 @@ def train(args):
            'split_sha256': manifest['sha256'], 'train_names': train_names, 'val_names': val_names,
            'environment': environment(), 'parameters': sum(p.numel() for p in model.parameters()),
            'protocol': protocol,
+           'augmentation': 'synchronized geometry; original target intensities',
            'marker_weights': {m: float(w) for m, w in zip(MARKERS, get_marker_weights(cd68_weight).tolist())},
            'selection': 'fixed final epoch; no validation' if full_data else
                         'maximum validation mean SSIM; PSNR reported separately; not an official composite score'}
@@ -372,7 +408,11 @@ def train(args):
 
 def load_model(path, device):
     checkpoint = torch.load(path, map_location='cpu', weights_only=False)
-    if checkpoint.get('format') not in (1, 2) or tuple(checkpoint['run']['markers']) != MARKERS:
+    marker_names = tuple(checkpoint['run']['markers'])
+    if (checkpoint.get('format') not in (1, 2)
+            or not marker_names
+            or marker_names != tuple(marker for marker in MARKERS if marker in marker_names)
+            or checkpoint['run']['model_config'].get('markers', len(MARKERS)) != len(marker_names)):
         raise ValueError('Unsupported checkpoint/marker order')
     model = build_reconstruction_model(checkpoint['run']['model_config']).to(device)
     model.load_state_dict(checkpoint['ema'], strict=True)
@@ -390,8 +430,10 @@ def eval_command(args):
     # Independent checks prevent evaluation mislabeled as held-out after full-data training.
     if set(names) & set(checkpoint['run']['train_names']):
         raise ValueError('Evaluation names were used for training')
-    loader = make_loader(args.data_root, names, args.batch_size)
-    metrics = evaluate(model, loader, device, args.tta)
+    marker_names = tuple(checkpoint['run']['markers'])
+    loader = make_loader(args.data_root, names, args.batch_size,
+                         marker_names=marker_names)
+    metrics = evaluate(model, loader, device, args.tta, marker_names)
     metrics.update({'split': args.split, 'split_sha256': manifest['sha256'],
                     'checkpoint_sha256': hashlib.sha256(Path(args.checkpoint).read_bytes()).hexdigest()})
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
@@ -405,6 +447,7 @@ def infer_command(args):
     seed_all(args.seed)
     device = torch.device(args.device)
     model, checkpoint = load_model(args.checkpoint, device)
+    marker_names = tuple(checkpoint['run']['markers'])
     if isinstance(model, AnchoredIHC):
         if checkpoint.get('format') != 2 or checkpoint.get('kind') != 'semifinal_final':
             raise ValueError('Anchored test inference requires the single exported final checkpoint')
@@ -426,7 +469,7 @@ def infer_command(args):
     output = Path(args.output)
     if output.exists() and any(output.iterdir()):
         raise FileExistsError('Inference output must be empty to avoid stale mixed predictions')
-    for marker in MARKERS:
+    for marker in marker_names:
         (output/'results'/'test'/marker).mkdir(parents=True, exist_ok=True)
     for offset in range(0, len(inputs), args.batch_size):
         files = inputs[offset:offset+args.batch_size]
@@ -436,25 +479,28 @@ def infer_command(args):
         x = torch.from_numpy(np.stack(arrays)[:, None]).float().to(device)/255
         with amp_context(device):
             pred = predict(model, x, args.tta)
+            if not torch.isfinite(pred).all().item():
+                raise ValueError('Non-finite model output')
             if pred.min().item() < 0 or pred.max().item() > 1:
                 raise ValueError('Model output is outside the official [0,1] range')
+            if pred.shape[1] != len(marker_names):
+                raise ValueError('Model output count differs from checkpoint markers')
             pred = pred.mul(255).round().to(torch.uint8).cpu().numpy()
         for file, channels in zip(files, pred):
-            for marker, channel in zip(MARKERS, channels):
+            for marker, channel in zip(marker_names, channels):
                 # 官方要求 8-bit RGB，官方数据本身也是三通道相同的灰度信号
-                rgb = np.repeat(channel[:, :, None], 3, axis=2)
-                Image.fromarray(rgb).save(output/'results'/'test'/marker/(file.stem+'_fake.jpg'),
-                                          quality=OFFICIAL_JPEG_QUALITY, subsampling=0, optimize=False)
+                (output/'results'/'test'/marker/(file.stem+'_fake.jpg')).write_bytes(
+                    encode_rgb_jpeg(channel))
         if offset % (args.batch_size*50) == 0:
             print(f'Inferred {min(offset+len(files), len(inputs))}/{len(inputs)}', flush=True)
-    write_json(output/'provenance.json', {'input_count': len(inputs), 'markers': list(MARKERS),
+    write_json(output/'provenance.json', {'input_count': len(inputs), 'markers': list(marker_names),
                'deployment_sha256': deployment['selection_report_sha256'] if deployment else None,
                'tta': args.tta, 'serialization': {'format': 'JPEG',
                'quality': OFFICIAL_JPEG_QUALITY, 'subsampling': 0, 'optimize': False},
                'run': checkpoint['run'],
                'checkpoint_sha256': hashlib.sha256(Path(args.checkpoint).read_bytes()).hexdigest(),
                'input_names_sha256': digest([p.name for p in inputs])})
-    print(f'Wrote {len(inputs)*len(MARKERS)} JPEGs. Package only results/, not provenance.json.', flush=True)
+    print(f'Wrote {len(inputs)*len(marker_names)} JPEGs. Package only results/, not provenance.json.', flush=True)
 
 
 def main():

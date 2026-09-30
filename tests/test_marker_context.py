@@ -14,7 +14,7 @@ from src.data.roi_manifest import (MARKERS, SEMIFINAL_SEED, PairedMarkers, build
                                     read_gray, validate_manifest)
 from src.models.marker_context import MarkerContextNet, local_ssim, reconstruction_loss
 from src.train_marker_context import (eval_command, infer_command, inverse_transform,
-                                      load_model, predict, seed_all, train, transform)
+                                      load_model, make_loader, predict, seed_all, train, transform)
 
 
 class MarkerContextTests(unittest.TestCase):
@@ -116,12 +116,14 @@ class MarkerContextTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             manifest = self.make_fixture(root)
-            ds = PairedMarkers(root, manifest['splits']['train'][:1], augment=True)
+            ds = make_loader(root, manifest['splits']['train'][:1], 1, augment=True).dataset
+            cached = ds.cache[0].copy()
             expected = np.sort(ds.cache[0][0].ravel())
             for _ in range(8):
                 x, y, _ = ds[0]
                 torch.testing.assert_close(x.expand_as(y), y)
                 np.testing.assert_array_equal(np.sort(x.mul(255).round().byte().numpy().ravel()), expected)
+                np.testing.assert_array_equal(ds.cache[0], cached)
 
     def test_color_input_fails_explicitly(self):
         with tempfile.TemporaryDirectory() as temp:
