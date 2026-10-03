@@ -15,6 +15,24 @@ from .stable_diffusion import (
     SimpleDiffusionUNet,
     build_simple_stain_sd,
 )
+from .marigold_ihc import (
+    MarigoldIHC,
+    MarigoldIHCConfig,
+    build_marigold_ihc,
+)
+from .enhanced_unetpp import (
+    EnhancedUNetPlusPlus,
+    build_enhanced_unet,
+    combined_loss,
+    ms_ssim_loss,
+    edge_loss,
+)
+from .transformer_ihc import (
+    HybridCNFTransformer,
+    AttentionUNet,
+    build_hybrid_cnf_ihc,
+    build_attention_unet,
+)
 
 __all__ = [
     # Pix2Pix GAN
@@ -38,4 +56,19 @@ __all__ = [
     "SimpleDiffusionConfig",
     "SimpleDiffusionUNet",
     "build_simple_stain_sd",
+    # Marigold-style Latent Diffusion (SOTA)
+    "MarigoldIHC",
+    "MarigoldIHCConfig",
+    "build_marigold_ihc",
+    # Enhanced UNet++ (Dense connections + Multi-scale attention)
+    "EnhancedUNetPlusPlus",
+    "build_enhanced_unet",
+    "combined_loss",
+    "ms_ssim_loss",
+    "edge_loss",
+    # Hybrid CNN-Attention Transformer
+    "HybridCNFTransformer",
+    "AttentionUNet",
+    "build_hybrid_cnf_ihc",
+    "build_attention_unet",
 ]
