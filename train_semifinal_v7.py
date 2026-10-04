@@ -27,6 +27,8 @@ from src.data.roi_manifest import MARKERS, PairedMarkers, SEMIFINAL_SEED, roi_id
 from src.models.marker_context import local_ssim
 from src.models.marker_smp_unet import SMP_VERSION
 from src.train_marker_context import (
+    _NEW_CHANNEL_ARCHITECTURES,
+    _WIDTH_IS_DECODER_CHANNELS,
     amp_context,
     build_reconstruction_model,
     compact,
@@ -99,7 +101,7 @@ def recipe_from_args(args):
 
 def model_config_from_args(args, marker_names):
     config = {'width': args.width, 'markers': len(marker_names)}
-    if args.architecture not in ('marker_nafnet', 'smp_resnet34_unet'):
+    if args.architecture not in _WIDTH_IS_DECODER_CHANNELS + _NEW_CHANNEL_ARCHITECTURES:
         config['context'] = True
     if args.architecture != 'context':
         config['architecture'] = args.architecture
@@ -162,6 +164,9 @@ def source_hashes():
         'src/models/prototype_marker.py',
         'src/models/marker_nafnet.py',
         'src/models/marker_smp_unet.py',
+        'src/models/enhanced_unetpp.py',
+        'src/models/marigold_ihc.py',
+        'src/models/transformer_ihc.py',
         'requirements-smp-unet.txt',
         'src/train_marker_context.py',
     )
@@ -583,7 +588,7 @@ def main():
     train.add_argument('--loss', choices=('legacy-v6', 'normalized'), default='normalized')
     train.add_argument('--architecture', choices=('context', 'marker_specific',
                                                   'prototype_marker', 'marker_nafnet',
-                                                  'smp_resnet34_unet'),
+                                                  'smp_resnet34_unet') + _NEW_CHANNEL_ARCHITECTURES,
                         default='context')
     train.add_argument('--target-marker', choices=MARKERS,
                        help='Train one marker (marker_nafnet or smp_resnet34_unet); default is all four')

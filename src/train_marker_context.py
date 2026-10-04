@@ -31,24 +31,56 @@ from .models.prototype_marker import PrototypeMarkerNet
 from .models.marker_nafnet import MarkerNAFNet
 from .models.marker_smp_unet import MarkerSMPUNet, SMP_VERSION, smp_dependency_sources
 from .models.anchored_ihc import AnchoredIHC
+from .models.enhanced_unetpp import EnhancedUNetPlusPlus
+from .models.marigold_ihc import MarigoldIHC, MarigoldIHCConfig, MarigoldIHCWrapper
+from .models.transformer_ihc import AttentionUNet, HybridCNFTransformer
 
 OFFICIAL_JPEG_QUALITY = 100
+
+# Architectures that take the legacy ``context`` flag.
+_LEGACY_CONTEXT_ARCHITECTURES = ('context', 'marker_specific', 'prototype_marker', 'anchored')
+# Architectures that read ``markers`` and use ``width`` as decoder channels.
+_WIDTH_IS_DECODER_CHANNELS = ('marker_nafnet', 'smp_resnet34_unet')
+# Architectures emitting one output channel per marker; they take no ``context`` flag.
+_NEW_CHANNEL_ARCHITECTURES = ('enhanced_unetpp', 'marigold', 'hybrid_cnf', 'attention_unet')
 
 
 def build_reconstruction_model(config):
     config = dict(config)
     architecture = config.pop('architecture', 'context')
+    markers = config.pop('markers', None)
+    if isinstance(markers, bool) or not isinstance(markers, int) or markers < 1:
+        markers = 4
+    width = config.get('width', 64)
+    if architecture in _WIDTH_IS_DECODER_CHANNELS:
+        # These architectures read ``markers`` for the output channel count and
+        # use ``width`` as decoder channels rather than ``base_channels``.
+        return {'marker_nafnet': MarkerNAFNet, 'smp_resnet34_unet': MarkerSMPUNet}[architecture](
+            markers=markers, **config)
     if architecture == 'anchored':
         return AnchoredIHC(**config)
     if architecture == 'prototype_marker':
         return PrototypeMarkerNet(**config)
-    if architecture == 'marker_nafnet':
-        return MarkerNAFNet(**config)
-    if architecture == 'smp_resnet34_unet':
-        return MarkerSMPUNet(**config)
-    if architecture not in ('context', 'marker_specific'):
+    if architecture in ('context', 'marker_specific'):
+        return (MarkerSpecificNet if architecture == 'marker_specific' else MarkerContextNet)(**config)
+    if architecture not in _NEW_CHANNEL_ARCHITECTURES:
         raise ValueError(f'Unsupported architecture: {architecture}')
-    return (MarkerSpecificNet if architecture == 'marker_specific' else MarkerContextNet)(**config)
+    # The remaining architectures emit one channel per marker and take no context flag.
+    config.pop('context', None)
+    config.pop('width', None)
+    out_channels = markers
+    if architecture == 'enhanced_unetpp':
+        return EnhancedUNetPlusPlus(in_channels=1, out_channels=out_channels,
+                                    base_channels=width, depth=4,
+                                    use_deep_supervision=True, **config)
+    if architecture == 'marigold':
+        return MarigoldIHCWrapper(MarigoldIHCConfig(base_channels=width,
+                                                    num_markers=out_channels, **config))
+    if architecture == 'hybrid_cnf':
+        return HybridCNFTransformer(in_channels=1, out_channels=out_channels,
+                                    base_channels=width, **config)
+    return AttentionUNet(in_channels=1, out_channels=out_channels,
+                         base_channels=width, depth=4, **config)
 
 
 def amp_context(device):
@@ -264,7 +296,7 @@ def train(args):
                    selected_names(manifest['splits']['train'], args.train_limit, args.seed))
     val_names = [] if full_data else selected_names(manifest['splits']['val'], args.val_limit, args.seed)
     model_config = dict(width=args.width, markers=len(MARKERS))
-    if architecture not in ('marker_nafnet', 'smp_resnet34_unet'):
+    if architecture not in _WIDTH_IS_DECODER_CHANNELS + _NEW_CHANNEL_ARCHITECTURES:
         model_config['context'] = not args.no_context
     if architecture == 'smp_resnet34_unet':
         model_config['smp_version'] = SMP_VERSION
@@ -550,7 +582,8 @@ def main():
         if name == 'train':
             p.add_argument('--architecture', choices=('context', 'marker_specific', 'anchored',
                                                       'prototype_marker', 'marker_nafnet',
-                                                      'smp_resnet34_unet'), default='context')
+                                                      'smp_resnet34_unet') + _NEW_CHANNEL_ARCHITECTURES,
+                           default='context')
             p.add_argument('--baseline-checkpoint', help='Initialize a frozen audited baseline for residual refinement')
             p.add_argument('--residual-limit', type=float, default=.2)
             p.add_argument('--width', type=int, default=16)

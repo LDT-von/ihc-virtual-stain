@@ -818,6 +818,47 @@ class MarigoldIHC(nn.Module):
 
 
 # ============================================================================
+# Marigold Wrapper for Training Compatibility
+# ============================================================================
+
+class MarigoldIHCWrapper(nn.Module):
+    """Wraps MarigoldIHC to provide a simple forward(x) interface for training.
+
+    The training pipeline calls model(x) where x is 1-channel DAPI grayscale.
+    MarigoldIHC.sample(dapi, marker_idx) expects 3-channel RGB DAPI.
+    This wrapper:
+      - replicates 1-ch input to 3-ch
+      - runs the diffusion model
+      - projects the 3-channel IHC output to 4 channels
+    """
+
+    def __init__(self, marigold_config: MarigoldIHCConfig, num_markers: int = 4):
+        super().__init__()
+        self.core = MarigoldIHC(marigold_config)
+        self.num_markers = num_markers
+        # 3-ch -> 4-ch projection (one channel per marker)
+        self.proj = nn.Conv2d(3, num_markers, 1)
+
+    def forward(self, x: torch.Tensor, marker_idx: int = 0) -> torch.Tensor:
+        """Forward pass for the training pipeline.
+
+        Args:
+            x: DAPI input (B, 1, H, W)
+            marker_idx: marker index (uses 0 for simplicity)
+
+        Returns:
+            IHC prediction (B, 4, H, W) in [0, 1]
+        """
+        if x.shape[1] == 1:
+            x3 = x.repeat(1, 3, 1, 1)  # grayscale -> RGB
+        else:
+            x3 = x
+        out = self.core.sample(x3, marker_idx)
+        out = (out + 1) / 2  # [-1,1] -> [0,1]
+        return self.proj(out)
+
+
+# ============================================================================
 # Model Builder
 # ============================================================================
 

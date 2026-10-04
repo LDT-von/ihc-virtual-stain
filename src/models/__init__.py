@@ -17,6 +17,7 @@ from .stable_diffusion import (
 )
 from .marigold_ihc import (
     MarigoldIHC,
+    MarigoldIHCWrapper,
     MarigoldIHCConfig,
     build_marigold_ihc,
 )
