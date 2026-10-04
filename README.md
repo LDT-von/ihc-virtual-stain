@@ -1,5 +1,15 @@
 # IHC Virtual Stain (DAPI → IHC)
 
+## 新对照：SMP ResNet34-U-Net（2026-10-04）
+
+已接入官方 `segmentation-models-pytorch==0.5.0` 的 ResNet34 编码器与 U-Net 解码器，
+使用单通道 DAPI、随机初始化和独立 sigmoid 强度输出，支持四标记及 V7 单标记训练。
+复用现有 ROI 折分、SSIM/L1/MSE 损失、EMA、TTA 与 RGB JPEG 评估流程。
+运行入口为 `train_semifinal_v7.py fit --architecture smp_resnet34_unet`。
+安装、训练、选模、重训、推理及公平对照命令见 [SMP_RESNET34_UNET.md](docs/SMP_RESNET34_UNET.md)。
+目前只有接口检查，没有真实数据训练成绩；不能把该候选称为已提分模型。
+
+
 ## 当前主线：IHC Ultimate v1（2026-09-20；2026-09-22 平台分 74.6531）
 
 冻结 MCN 基准，利用 DAPI 与基准的四标记预测进行联合残差精修；四个独立解码器从零修正开始。

@@ -25,6 +25,7 @@ from src.data.paired_clean import CleanPairedMarkers
 from src.data.marker_subset import MarkerSubsetDataset
 from src.data.roi_manifest import MARKERS, PairedMarkers, SEMIFINAL_SEED, roi_id
 from src.models.marker_context import local_ssim
+from src.models.marker_smp_unet import SMP_VERSION
 from src.train_marker_context import (
     amp_context,
     build_reconstruction_model,
@@ -34,6 +35,7 @@ from src.train_marker_context import (
     infer_command,
     load_manifest,
     seed_all,
+    update_ema,
     write_json,
 )
 
@@ -90,7 +92,26 @@ def recipe_from_args(args):
             'prototype_temperature': args.prototype_temperature,
             'prototype_diversity_weight': args.prototype_diversity_weight,
         })
+    if args.architecture == 'smp_resnet34_unet':
+        recipe['smp_version'] = SMP_VERSION
     return recipe
+
+
+def model_config_from_args(args, marker_names):
+    config = {'width': args.width, 'markers': len(marker_names)}
+    if args.architecture not in ('marker_nafnet', 'smp_resnet34_unet'):
+        config['context'] = True
+    if args.architecture != 'context':
+        config['architecture'] = args.architecture
+    if args.architecture == 'smp_resnet34_unet':
+        config['smp_version'] = SMP_VERSION
+    if args.architecture == 'prototype_marker':
+        config.update({
+            'num_shared_prototypes': args.num_shared_prototypes,
+            'num_task_prototypes': args.num_task_prototypes,
+            'temperature': args.prototype_temperature,
+        })
+    return config
 
 
 def make_training_loader(args, names, device, marker_names):
@@ -140,6 +161,8 @@ def source_hashes():
         'src/models/marker_specific.py',
         'src/models/prototype_marker.py',
         'src/models/marker_nafnet.py',
+        'src/models/marker_smp_unet.py',
+        'requirements-smp-unet.txt',
         'src/train_marker_context.py',
     )
     return {name: hashlib.sha256((root / name).read_bytes()).hexdigest()
@@ -181,9 +204,9 @@ def repair_history(path, checkpoint):
 def fit(args):
     seed_all(args.seed)
     if args.width is None:
-        args.width = 32 if args.architecture == 'marker_nafnet' else 96
-    if args.target_marker is not None and args.architecture != 'marker_nafnet':
-        raise ValueError('--target-marker currently requires --architecture marker_nafnet')
+        args.width = {'marker_nafnet': 32, 'smp_resnet34_unet': 16}.get(args.architecture, 96)
+    if args.target_marker is not None and args.architecture not in ('marker_nafnet', 'smp_resnet34_unet'):
+        raise ValueError('--target-marker requires marker_nafnet or smp_resnet34_unet')
     active_markers = ((args.target_marker,) if args.target_marker else MARKERS)
     if (args.epochs < 1 or args.batch_size < 1
             or not math.isfinite(args.lr) or args.lr <= 0):
@@ -258,17 +281,7 @@ def fit(args):
     output.mkdir(parents=True, exist_ok=True)
 
     device = torch.device(args.device)
-    model_config = {'width': args.width, 'markers': len(active_markers)}
-    if args.architecture != 'marker_nafnet':
-        model_config['context'] = True
-    if args.architecture != 'context':
-        model_config['architecture'] = args.architecture
-    if args.architecture == 'prototype_marker':
-        model_config.update({
-            'num_shared_prototypes': args.num_shared_prototypes,
-            'num_task_prototypes': args.num_task_prototypes,
-            'temperature': args.prototype_temperature,
-        })
+    model_config = model_config_from_args(args, active_markers)
     model = build_reconstruction_model(model_config).to(device)
     ema = copy.deepcopy(model).eval().requires_grad_(False)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=1e-4)
@@ -313,6 +326,8 @@ def fit(args):
                     'recipe', 'source_sha256', 'selection_sha256'):
             if old_run.get(key) != run[key]:
                 raise ValueError(f'Resume mismatch: {key}')
+        if old_run.get('environment', {}).get('source_sha256') != run['environment']['source_sha256']:
+            raise ValueError('Resume mismatch: dependency/source environment')
         model.load_state_dict(checkpoint['model'], strict=True)
         ema.load_state_dict(checkpoint['ema'], strict=True)
         optimizer.load_state_dict(checkpoint['optimizer'])
@@ -383,9 +398,7 @@ def fit(args):
             scaler.update()
             steps += 1
             decay = min(0.995, (1 + steps) / (10 + steps))
-            with torch.no_grad():
-                for ema_param, param in zip(ema.parameters(), model.parameters()):
-                    ema_param.lerp_(param, 1 - decay)
+            update_ema(ema, model, decay)
             total_loss += float(loss.item()) * len(x)
             total_reconstruction += float(data_loss.item()) * len(x)
             if diversity is not None:
@@ -569,12 +582,13 @@ def main():
                        default='geometry')
     train.add_argument('--loss', choices=('legacy-v6', 'normalized'), default='normalized')
     train.add_argument('--architecture', choices=('context', 'marker_specific',
-                                                  'prototype_marker', 'marker_nafnet'),
+                                                  'prototype_marker', 'marker_nafnet',
+                                                  'smp_resnet34_unet'),
                         default='context')
     train.add_argument('--target-marker', choices=MARKERS,
-                       help='Train one marker (marker_nafnet only); default is all four')
+                       help='Train one marker (marker_nafnet or smp_resnet34_unet); default is all four')
     train.add_argument('--width', type=int,
-                       help='Default: 32 for marker_nafnet, 96 otherwise')
+                       help='Default: 16 for smp_resnet34_unet, 32 for marker_nafnet, 96 otherwise')
     train.add_argument('--num-shared-prototypes', type=int, default=8)
     train.add_argument('--num-task-prototypes', type=int, default=4)
     train.add_argument('--prototype-temperature', type=float, default=0.25)

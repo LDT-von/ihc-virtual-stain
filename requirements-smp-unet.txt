@@ -1,0 +1,4 @@
+# Install the training server's matching PyTorch / torchvision CUDA builds first.
+-r requirements-marker-context.txt
+torchvision>=0.18,<1
+segmentation-models-pytorch==0.5.0

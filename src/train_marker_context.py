@@ -29,6 +29,7 @@ from .models.marker_context import (MarkerContextNet, get_marker_weights, local_
 from .models.marker_specific import MarkerSpecificNet
 from .models.prototype_marker import PrototypeMarkerNet
 from .models.marker_nafnet import MarkerNAFNet
+from .models.marker_smp_unet import MarkerSMPUNet, SMP_VERSION, smp_dependency_sources
 from .models.anchored_ihc import AnchoredIHC
 
 OFFICIAL_JPEG_QUALITY = 100
@@ -43,6 +44,8 @@ def build_reconstruction_model(config):
         return PrototypeMarkerNet(**config)
     if architecture == 'marker_nafnet':
         return MarkerNAFNet(**config)
+    if architecture == 'smp_resnet34_unet':
+        return MarkerSMPUNet(**config)
     if architecture not in ('context', 'marker_specific'):
         raise ValueError(f'Unsupported architecture: {architecture}')
     return (MarkerSpecificNet if architecture == 'marker_specific' else MarkerContextNet)(**config)
@@ -52,6 +55,16 @@ def amp_context(device):
     # Ampere supports BF16's FP32-like exponent range, avoiding FP16 gradient overflow.
     dtype = torch.bfloat16 if device.type == 'cuda' and torch.cuda.is_bf16_supported() else torch.float16
     return torch.autocast(device_type=device.type, dtype=dtype, enabled=device.type == 'cuda')
+
+
+@torch.no_grad()
+def update_ema(ema, model, decay):
+    """Average trainable parameters and copy stateful buffers, including BatchNorm."""
+    for ema_param, param in zip(ema.parameters(), model.parameters()):
+        if param.requires_grad:
+            ema_param.lerp_(param, 1 - decay)
+    for ema_buffer, buffer in zip(ema.buffers(), model.buffers()):
+        ema_buffer.copy_(buffer)
 
 
 def seed_all(seed):
@@ -178,12 +191,19 @@ def environment():
                Path(__file__).parent/'models'/'anchored_ihc.py',
                Path(__file__).parent/'models'/'prototype_marker.py',
                Path(__file__).parent/'models'/'marker_nafnet.py',
+               Path(__file__).parent/'models'/'marker_smp_unet.py',
                Path(__file__).parent/'data'/'roi_manifest.py',
                Path(__file__).parent/'data'/'paired_clean.py',
                Path(__file__).parent/'data'/'marker_subset.py']
+    source_sha256 = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}
+    for source in smp_dependency_sources():
+        if not source.is_file():
+            raise ValueError(f'Incomplete SMP installation: {source}')
+        relative = source.as_posix().split('/segmentation_models_pytorch/')[-1]
+        source_sha256['smp/' + relative] = hashlib.sha256(source.read_bytes()).hexdigest()
     return {'python': sys.version, 'torch': str(torch.__version__), 'platform': platform.platform(),
             'device': torch.cuda.get_device_name() if torch.cuda.is_available() else 'cpu',
-            'git_head': git, 'source_sha256': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}}
+            'git_head': git, 'source_sha256': source_sha256}
 
 
 def write_json(path, value):
@@ -234,6 +254,7 @@ def train(args):
                    Path(__file__).parent/'models'/'anchored_ihc.py',
                    Path(__file__).parent/'models'/'prototype_marker.py',
                    Path(__file__).parent/'models'/'marker_nafnet.py',
+                   Path(__file__).parent/'models'/'marker_smp_unet.py',
                    Path(__file__).parent/'data'/'roi_manifest.py',
                    Path(__file__).parent/'data'/'paired_clean.py',
                    Path(__file__).parent/'data'/'marker_subset.py'):
@@ -242,7 +263,11 @@ def train(args):
     train_names = (sorted(sum(manifest['splits'].values(), [])) if full_data else
                    selected_names(manifest['splits']['train'], args.train_limit, args.seed))
     val_names = [] if full_data else selected_names(manifest['splits']['val'], args.val_limit, args.seed)
-    model_config = dict(width=args.width, markers=len(MARKERS), context=not args.no_context)
+    model_config = dict(width=args.width, markers=len(MARKERS))
+    if architecture not in ('marker_nafnet', 'smp_resnet34_unet'):
+        model_config['context'] = not args.no_context
+    if architecture == 'smp_resnet34_unet':
+        model_config['smp_version'] = SMP_VERSION
     if getattr(args, 'architecture', 'context') != 'context':
         model_config['architecture'] = args.architecture
     baseline = None
@@ -369,10 +394,7 @@ def train(args):
             scaler.update()
             steps += 1
             decay = min(.995, (1+steps)/(10+steps))
-            with torch.no_grad():
-                for e, p in zip(ema.parameters(), model.parameters()):
-                    if p.requires_grad:
-                        e.lerp_(p, 1-decay)
+            update_ema(ema, model, decay)
             total += loss.item()*len(x)
             count += len(x)
             if (batch_index+1) % 100 == 0:
@@ -414,6 +436,9 @@ def load_model(path, device):
             or marker_names != tuple(marker for marker in MARKERS if marker in marker_names)
             or checkpoint['run']['model_config'].get('markers', len(MARKERS)) != len(marker_names)):
         raise ValueError('Unsupported checkpoint/marker order')
+    if checkpoint['run']['model_config'].get('architecture') == 'smp_resnet34_unet':
+        if checkpoint['run'].get('environment', {}).get('source_sha256') != environment()['source_sha256']:
+            raise ValueError('SMP checkpoint source/dependency mismatch; use its original environment')
     model = build_reconstruction_model(checkpoint['run']['model_config']).to(device)
     model.load_state_dict(checkpoint['ema'], strict=True)
     return model.eval(), checkpoint
@@ -523,7 +548,9 @@ def main():
             p.add_argument('--data-root', required=True)
             p.add_argument('--manifest', required=True)
         if name == 'train':
-            p.add_argument('--architecture', choices=('context', 'marker_specific', 'anchored'), default='context')
+            p.add_argument('--architecture', choices=('context', 'marker_specific', 'anchored',
+                                                      'prototype_marker', 'marker_nafnet',
+                                                      'smp_resnet34_unet'), default='context')
             p.add_argument('--baseline-checkpoint', help='Initialize a frozen audited baseline for residual refinement')
             p.add_argument('--residual-limit', type=float, default=.2)
             p.add_argument('--width', type=int, default=16)

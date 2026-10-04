@@ -35,6 +35,22 @@ def bootstrap_roi(deltas, seed, repeats=10000):
     return [float(x) for x in np.quantile(means, [0.025, 0.975])]
 
 
+def require_matched_training(baseline, candidate):
+    fields = [
+        'width', 'augmentation', 'loss', 'cd68_weight', 'batch_size', 'lr',
+        'schedule_epochs', 'warmup_epochs', 'weaken_start_epoch', 'eval_every',
+    ]
+    architectures = {recipe.get('architecture', 'context') for recipe in (baseline, candidate)}
+    # SMP width controls decoder channels only, while MCN/NAF width controls the
+    # encoder as well. Different families compare complete architectures rather
+    # than pretending the same numeric width means matched parameter capacity.
+    if 'smp_resnet34_unet' in architectures and len(architectures) > 1:
+        fields.remove('width')
+    for field in fields:
+        if baseline.get(field) != candidate.get(field):
+            raise ValueError(f'Unmatched training setting: {field}')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline", required=True, help="Baseline selection JSON")
@@ -53,13 +69,7 @@ def main():
         if baseline["recipe"][field] != candidate["recipe"][field]:
             raise ValueError(f"Different fold assignment or inference protocol: {field}")
     if args.require_matched_training:
-        training_fields = (
-            "width", "augmentation", "loss", "cd68_weight", "batch_size", "lr",
-            "schedule_epochs", "warmup_epochs", "weaken_start_epoch", "eval_every",
-        )
-        for field in training_fields:
-            if baseline["recipe"].get(field) != candidate["recipe"].get(field):
-                raise ValueError(f"Unmatched training setting: {field}")
+        require_matched_training(baseline['recipe'], candidate['recipe'])
     rois = sorted(baseline["all_rois"])
     base = baseline["selected_metrics"]
     cand = candidate["selected_metrics"]
@@ -67,6 +77,11 @@ def main():
         raise ValueError("Different validation image count or marker set")
     report = {"baseline": str(Path(args.baseline).resolve()),
               "candidate": str(Path(args.candidate).resolve()),
+              "architecture_configs": {
+                  "baseline": {key: baseline['recipe'].get(key) for key in ('architecture', 'width')},
+                  "candidate": {key: candidate['recipe'].get(key) for key in ('architecture', 'width')},
+              },
+              "capacity_note": "Widths have different meanings across architecture families; this comparison does not impose equal parameter counts.",
               "matched_training_required": args.require_matched_training,
               "roi_count": len(rois), "baseline_epoch": baseline["selected_epoch"],
               "candidate_epoch": candidate["selected_epoch"],
